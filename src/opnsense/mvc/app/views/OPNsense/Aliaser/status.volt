@@ -73,6 +73,8 @@
     }
     .daemon-bar.running { background: #dff0d8; border: 1px solid #d6e9c6; }
     .daemon-bar.stopped { background: #f2dede; border: 1px solid #ebccd1; }
+    .daemon-bar { display: flex; align-items: center; justify-content: space-between; }
+    .daemon-controls .btn { margin-left: 5px; }
     .alert-badge-empty { background: #d9534f; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 5px; }
     .alert-badge-threshold { background: #f0ad4e; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 5px; }
     .sources-list { font-size: 12px; color: #666; margin-bottom: 8px; }
@@ -114,13 +116,24 @@
 
             // Daemon status bar
             var daemonBar = $('#daemon-status');
-            if (data.daemon && data.daemon.running) {
+            var isRunning = data.daemon && data.daemon.running;
+            var statusHtml = '';
+            if (isRunning) {
                 daemonBar.attr('class', 'daemon-bar running');
-                daemonBar.html('<span class="fa fa-check-circle text-success"></span> Daemon running (PID ' + data.daemon.pid + ')');
+                statusHtml = '<span><span class="fa fa-check-circle text-success"></span> Daemon running (PID ' + data.daemon.pid + ')</span>';
             } else {
                 daemonBar.attr('class', 'daemon-bar stopped');
-                daemonBar.html('<span class="fa fa-times-circle text-danger"></span> Daemon not running');
+                statusHtml = '<span><span class="fa fa-times-circle text-danger"></span> Daemon not running</span>';
             }
+            statusHtml += '<span class="daemon-controls">';
+            if (isRunning) {
+                statusHtml += '<button class="btn btn-xs btn-warning btn-svc" data-action="restart"><span class="fa fa-refresh"></span> Restart</button>';
+                statusHtml += '<button class="btn btn-xs btn-danger btn-svc" data-action="stop"><span class="fa fa-stop"></span> Stop</button>';
+            } else {
+                statusHtml += '<button class="btn btn-xs btn-success btn-svc" data-action="start"><span class="fa fa-play"></span> Start</button>';
+            }
+            statusHtml += '</span>';
+            daemonBar.html(statusHtml);
 
             container.empty();
 
@@ -233,6 +246,21 @@
     $(document).ready(function() {
         loadStatus();
         setInterval(loadStatus, 10000);
+
+        // Service control: start / stop / restart
+        $(document).on('click', '.btn-svc', function() {
+            var action = $(this).data('action');
+            var btn = $(this);
+            btn.prop('disabled', true);
+            $.post('/api/aliaser/service/' + action, function() {
+                setTimeout(function() {
+                    loadStatus();
+                    btn.prop('disabled', false);
+                }, 1500);
+            }).fail(function() {
+                btn.prop('disabled', false);
+            });
+        });
 
         $(document).on('click', '.btn-refresh', function() {
             var uuid = $(this).data('uuid');
