@@ -19,15 +19,33 @@
     </field>
     <field>
         <id>watcher.hostname</id>
-        <label>Hostname</label>
+        <label>Hostname (legacy)</label>
         <type>text</type>
-        <help>FQDN to resolve (for DNS type). Example: office.example.com</help>
+        <help>Single FQDN to resolve (legacy field, use Hostnames instead).</help>
+    </field>
+    <field>
+        <id>watcher.hostnames</id>
+        <label>Hostnames</label>
+        <type>text</type>
+        <help>Comma-separated FQDNs to resolve (for DNS type). Example: office.example.com, home.ddns.net</help>
     </field>
     <field>
         <id>watcher.url</id>
         <label>URL</label>
         <type>text</type>
         <help>URL to fetch IP list from (for URL Table type). One IP/CIDR per line, # comments ignored. Example: https://www.cloudflare.com/ips-v4</help>
+    </field>
+    <field>
+        <id>watcher.staticEntries</id>
+        <label>Static IPs/CIDRs</label>
+        <type>text</type>
+        <help>Static IPs or CIDRs always included in this alias. Comma-separated. Example: 10.0.0.0/8, 192.168.1.0/24</help>
+    </field>
+    <field>
+        <id>watcher.includeAliases</id>
+        <label>Include Aliases</label>
+        <type>text</type>
+        <help>Merge IPs from these existing pf table aliases. Comma-separated alias names. Example: Public_IP, VPN_Hosts</help>
     </field>
     <field>
         <id>watcher.alias</id>

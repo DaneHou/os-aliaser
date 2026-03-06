@@ -73,6 +73,15 @@
     }
     .daemon-bar.running { background: #dff0d8; border: 1px solid #d6e9c6; }
     .daemon-bar.stopped { background: #f2dede; border: 1px solid #ebccd1; }
+    .alert-badge-empty { background: #d9534f; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 5px; }
+    .alert-badge-threshold { background: #f0ad4e; color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 5px; }
+    .sources-list { font-size: 12px; color: #666; margin-bottom: 8px; }
+    .sources-list span { margin-right: 12px; }
+    .history-panel { margin-top: 10px; font-size: 12px; }
+    .history-panel summary { cursor: pointer; color: #337ab7; font-weight: 600; }
+    .history-entry { padding: 4px 0; border-bottom: 1px solid #eee; }
+    .history-entry .added { color: #5cb85c; }
+    .history-entry .removed { color: #d9534f; }
 </style>
 
 <script>
@@ -137,14 +146,32 @@
                 if (hasError) {
                     html += '<span class="label label-danger">' + w.consecutive_errors + ' errors</span>';
                 }
+                // Health alerts
+                if (w.alerts) {
+                    $.each(w.alerts, function(i, alert) {
+                        if (alert.type === 'empty') {
+                            html += '<span class="alert-badge-empty"><span class="fa fa-exclamation-circle"></span> ' + alert.message + '</span>';
+                        } else if (alert.type === 'threshold') {
+                            html += '<span class="alert-badge-threshold"><span class="fa fa-warning"></span> ' + alert.message + '</span>';
+                        }
+                    });
+                }
                 html += '</div>';
                 html += '<button class="btn btn-xs btn-default btn-refresh" data-uuid="' + w.uuid + '">' +
                     '<span class="fa fa-refresh"></span> Refresh Now</button>';
                 html += '</div>';
 
+                // Sources summary (composite)
+                if (w.sources && w.sources.length > 0) {
+                    html += '<div class="sources-list">';
+                    $.each(w.sources, function(i, src) {
+                        html += '<span><span class="fa fa-fw fa-angle-right"></span> ' + src + '</span>';
+                    });
+                    html += '</div>';
+                }
+
                 // Metrics
                 html += '<div class="metrics-row">';
-                html += '<div class="metric"><span class="label-text">Target:</span> <span class="value">' + (w.target || '-') + '</span></div>';
                 html += '<div class="metric"><span class="label-text">Alias:</span> <span class="value">' + w.alias + '</span></div>';
                 html += '<div class="metric"><span class="label-text">IPs in table:</span> <span class="value">' + w.ip_count + '</span></div>';
                 html += '<div class="metric"><span class="label-text">Interval:</span> <span class="value">' + w.interval + 's</span></div>';
@@ -168,6 +195,33 @@
                 } else {
                     html += '<div class="text-muted" style="font-size:12px;margin-top:5px;">' +
                         '<span class="fa fa-info-circle"></span> No IPs in table</div>';
+                }
+
+                // Change history
+                if (w.history && w.history.length > 0) {
+                    html += '<div class="history-panel"><details>';
+                    html += '<summary><span class="fa fa-history"></span> Change History (' + w.history.length + ')</summary>';
+                    // Show newest first
+                    var hist = w.history.slice().reverse();
+                    $.each(hist, function(i, h) {
+                        html += '<div class="history-entry">';
+                        html += '<span class="text-muted">' + formatTime(h.timestamp) + '</span> ';
+                        html += h.old_count + ' &rarr; ' + h.new_count + ' entries';
+                        if (h.added && h.added.length > 0) {
+                            html += ' <span class="added">+' + h.added.length + ' added</span>';
+                            html += ' <small class="text-muted">(' + h.added.slice(0, 5).join(', ');
+                            if (h.added.length > 5) html += '...';
+                            html += ')</small>';
+                        }
+                        if (h.removed && h.removed.length > 0) {
+                            html += ' <span class="removed">-' + h.removed.length + ' removed</span>';
+                            html += ' <small class="text-muted">(' + h.removed.slice(0, 5).join(', ');
+                            if (h.removed.length > 5) html += '...';
+                            html += ')</small>';
+                        }
+                        html += '</div>';
+                    });
+                    html += '</details></div>';
                 }
 
                 html += '</div>';

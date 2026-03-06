@@ -52,7 +52,7 @@
                     },
                     "watcherTarget": function(column, row) {
                         if (row.type === 'dns') {
-                            return '<span class="fa fa-fw fa-globe text-primary"></span> ' + (row.hostname || '-');
+                            return '<span class="fa fa-fw fa-globe text-primary"></span> ' + (row.hostnames || row.hostname || '-');
                         } else {
                             return '<span class="fa fa-fw fa-link text-info"></span> ' + (row.url || '-');
                         }
@@ -84,14 +84,19 @@
         function toggleTypeFields() {
             var wtype = $('#watcher\\.type').val();
             if (wtype === 'dns') {
-                $('[id="row_watcher.hostname"]').show();
+                $('[id="row_watcher.hostname"]').hide();
+                $('[id="row_watcher.hostnames"]').show();
                 $('[id="row_watcher.url"]').hide();
                 $('[id="row_watcher.addressFamily"]').show();
             } else {
                 $('[id="row_watcher.hostname"]').hide();
+                $('[id="row_watcher.hostnames"]').hide();
                 $('[id="row_watcher.url"]').show();
                 $('[id="row_watcher.addressFamily"]').hide();
             }
+            // Always show composite fields
+            $('[id="row_watcher.staticEntries"]').show();
+            $('[id="row_watcher.includeAliases"]').show();
         }
         $(document).on('change', '#watcher\\.type', toggleTypeFields);
 

@@ -24,6 +24,12 @@
                     <error>Error</error>
                 </OptionValues>
             </logLevel>
+            <maxTableEntries type="IntegerField">
+                <default>0</default>
+                <MinimumValue>0</MinimumValue>
+                <MaximumValue>1000000</MaximumValue>
+                <ValidationMessage>Maximum table entries (0 = disabled)</ValidationMessage>
+            </maxTableEntries>
         </general>
 
         <!-- Watchers (multiple) -->
@@ -49,12 +55,33 @@
                     </OptionValues>
                 </type>
 
-                <!-- DNS watcher: FQDN to resolve -->
+                <!-- DNS watcher: single FQDN (legacy) -->
                 <hostname type="TextField">
                     <Required>N</Required>
                     <Mask>/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$/</Mask>
                     <ValidationMessage>Enter a valid FQDN (e.g. office.example.com)</ValidationMessage>
                 </hostname>
+
+                <!-- DNS watcher: comma-separated FQDNs -->
+                <hostnames type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^[a-zA-Z0-9\-\.,\s]{0,512}$/</Mask>
+                    <ValidationMessage>Comma-separated FQDNs</ValidationMessage>
+                </hostnames>
+
+                <!-- Static IPs/CIDRs always included -->
+                <staticEntries type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^[0-9a-fA-F:\.\/,\s]{0,1024}$/</Mask>
+                    <ValidationMessage>Comma-separated IPs or CIDRs</ValidationMessage>
+                </staticEntries>
+
+                <!-- Merge IPs from existing pf tables -->
+                <includeAliases type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^[a-zA-Z0-9_,\s]{0,256}$/</Mask>
+                    <ValidationMessage>Comma-separated alias names</ValidationMessage>
+                </includeAliases>
 
                 <!-- URL watcher: URL to fetch IP list from -->
                 <url type="TextField">

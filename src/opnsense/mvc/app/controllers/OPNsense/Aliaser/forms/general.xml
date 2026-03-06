@@ -17,4 +17,10 @@
         <type>dropdown</type>
         <help>Daemon logging verbosity. Debug logs every DNS lookup; Info logs changes; Warning logs failures only.</help>
     </field>
+    <field>
+        <id>general.maxTableEntries</id>
+        <label>Max Table Entries</label>
+        <type>text</type>
+        <help>Warn when any alias table exceeds this many entries. Set to 0 to disable.</help>
+    </field>
 </form>
