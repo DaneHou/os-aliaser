@@ -1,0 +1,26 @@
+<acl>
+    <page-services-aliaser>
+        <name>Services: Aliaser: Watchers</name>
+        <patterns>
+            <pattern>ui/aliaser/*</pattern>
+            <pattern>api/aliaser/watcher/*</pattern>
+            <pattern>api/aliaser/settings/*</pattern>
+            <pattern>api/aliaser/service/*</pattern>
+        </patterns>
+    </page-services-aliaser>
+    <page-services-aliaser-status>
+        <name>Services: Aliaser: Status</name>
+        <patterns>
+            <pattern>ui/aliaser/status*</pattern>
+            <pattern>api/aliaser/status/*</pattern>
+            <pattern>api/aliaser/service/*</pattern>
+        </patterns>
+    </page-services-aliaser-status>
+    <page-services-aliaser-log>
+        <name>Services: Aliaser: Log</name>
+        <patterns>
+            <pattern>ui/aliaser/log*</pattern>
+            <pattern>api/aliaser/log/*</pattern>
+        </patterns>
+    </page-services-aliaser-log>
+</acl>

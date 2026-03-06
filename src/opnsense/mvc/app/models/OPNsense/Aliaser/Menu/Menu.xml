@@ -1,0 +1,9 @@
+<menu>
+    <Services>
+        <Aliaser VisibleName="Aliaser" cssClass="fa fa-refresh fa-fw" order="15">
+            <Watchers VisibleName="Watchers" url="/ui/aliaser" order="10"/>
+            <Status VisibleName="Status" url="/ui/aliaser/status" order="20"/>
+            <Log VisibleName="Log" url="/ui/aliaser/log" order="30"/>
+        </Aliaser>
+    </Services>
+</menu>

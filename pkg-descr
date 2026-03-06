@@ -1,0 +1,17 @@
+Smart firewall alias manager for OPNsense.
+
+Monitors DNS hostnames and URL feeds, then atomically syncs resolved
+IPs into pf tables via pfctl -T replace. No filter reload, no dropped
+connections.
+
+Features:
+- DNS watchers with configurable intervals (10s-3600s)
+- URL feed watchers for threat feeds and cloud provider IP ranges
+- Atomic pf table updates without filter reload
+- Change detection with before/after logging
+- Failure alerting with consecutive error tracking
+- Live status dashboard with per-watcher diagnostics
+- Manual "Refresh Now" button for debugging
+- IPv4 + IPv6 dual-stack support
+
+WWW: https://github.com/DaneHou/os-aliaser

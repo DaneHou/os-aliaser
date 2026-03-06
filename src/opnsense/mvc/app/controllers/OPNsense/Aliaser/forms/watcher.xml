@@ -1,0 +1,56 @@
+<form>
+    <field>
+        <id>watcher.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Enable this watcher.</help>
+    </field>
+    <field>
+        <id>watcher.name</id>
+        <label>Name</label>
+        <type>text</type>
+        <help>Unique name for this watcher (alphanumeric + underscores, max 32 chars).</help>
+    </field>
+    <field>
+        <id>watcher.type</id>
+        <label>Type</label>
+        <type>dropdown</type>
+        <help>DNS Hostname: resolve a FQDN to IPs. URL Table: fetch an IP list from a URL.</help>
+    </field>
+    <field>
+        <id>watcher.hostname</id>
+        <label>Hostname</label>
+        <type>text</type>
+        <help>FQDN to resolve (for DNS type). Example: office.example.com</help>
+    </field>
+    <field>
+        <id>watcher.url</id>
+        <label>URL</label>
+        <type>text</type>
+        <help>URL to fetch IP list from (for URL Table type). Example: https://example.com/iplist.txt</help>
+    </field>
+    <field>
+        <id>watcher.alias</id>
+        <label>Target Alias</label>
+        <type>text</type>
+        <help>Name of the OPNsense firewall alias (pf table) to update. Must already exist.</help>
+    </field>
+    <field>
+        <id>watcher.interval</id>
+        <label>Interval (seconds)</label>
+        <type>text</type>
+        <help>How often to check for changes. Range: 10-86400 seconds.</help>
+    </field>
+    <field>
+        <id>watcher.addressFamily</id>
+        <label>Address Family</label>
+        <type>dropdown</type>
+        <help>For DNS type: resolve IPv4 only, IPv6 only, or both.</help>
+    </field>
+    <field>
+        <id>watcher.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Optional description for this watcher.</help>
+    </field>
+</form>

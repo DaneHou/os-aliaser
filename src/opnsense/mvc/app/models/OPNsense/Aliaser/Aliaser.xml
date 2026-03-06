@@ -1,0 +1,98 @@
+<model>
+    <mount>//OPNsense/Aliaser</mount>
+    <version>1.0.0</version>
+    <description>Smart Firewall Alias Manager</description>
+
+    <items>
+        <!-- Global settings -->
+        <general>
+            <enabled type="BooleanField">
+                <default>0</default>
+                <Required>Y</Required>
+            </enabled>
+            <defaultInterval type="IntegerField">
+                <default>30</default>
+                <MinimumValue>10</MinimumValue>
+                <MaximumValue>3600</MaximumValue>
+            </defaultInterval>
+            <logLevel type="OptionField">
+                <default>warn</default>
+                <OptionValues>
+                    <debug>Debug</debug>
+                    <info>Info</info>
+                    <warn>Warning</warn>
+                    <error>Error</error>
+                </OptionValues>
+            </logLevel>
+        </general>
+
+        <!-- Watchers (multiple) -->
+        <watchers>
+            <watcher type="ArrayField">
+                <enabled type="BooleanField">
+                    <default>1</default>
+                    <Required>Y</Required>
+                </enabled>
+
+                <name type="TextField">
+                    <Required>Y</Required>
+                    <Mask>/^[a-zA-Z0-9_]{1,32}$/</Mask>
+                    <ValidationMessage>Name must be 1-32 alphanumeric characters or underscores</ValidationMessage>
+                </name>
+
+                <type type="OptionField">
+                    <default>dns</default>
+                    <Required>Y</Required>
+                    <OptionValues>
+                        <dns>DNS Hostname</dns>
+                        <urltable>URL Table</urltable>
+                    </OptionValues>
+                </type>
+
+                <!-- DNS watcher: FQDN to resolve -->
+                <hostname type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$/</Mask>
+                    <ValidationMessage>Enter a valid FQDN (e.g. office.example.com)</ValidationMessage>
+                </hostname>
+
+                <!-- URL watcher: URL to fetch IP list from -->
+                <url type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^https?:\/\/.{1,512}$/</Mask>
+                    <ValidationMessage>Enter a valid HTTP or HTTPS URL</ValidationMessage>
+                </url>
+
+                <!-- Target pf table / alias name -->
+                <alias type="TextField">
+                    <Required>Y</Required>
+                    <Mask>/^[a-zA-Z0-9_]{1,31}$/</Mask>
+                    <ValidationMessage>Alias name must be 1-31 alphanumeric characters or underscores (must match an existing OPNsense alias)</ValidationMessage>
+                </alias>
+
+                <!-- Check interval in seconds -->
+                <interval type="IntegerField">
+                    <default>30</default>
+                    <MinimumValue>10</MinimumValue>
+                    <MaximumValue>86400</MaximumValue>
+                </interval>
+
+                <!-- DNS: resolve IPv4, IPv6, or both -->
+                <addressFamily type="OptionField">
+                    <default>ipv4</default>
+                    <OptionValues>
+                        <ipv4>IPv4 Only</ipv4>
+                        <ipv6>IPv6 Only</ipv6>
+                        <both>IPv4 + IPv6</both>
+                    </OptionValues>
+                </addressFamily>
+
+                <description type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^.{0,128}$/</Mask>
+                    <ValidationMessage>Description: max 128 characters</ValidationMessage>
+                </description>
+            </watcher>
+        </watchers>
+    </items>
+</model>

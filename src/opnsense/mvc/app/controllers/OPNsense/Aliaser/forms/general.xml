@@ -1,0 +1,20 @@
+<form>
+    <field>
+        <id>general.enabled</id>
+        <label>Enable Aliaser</label>
+        <type>checkbox</type>
+        <help>Enable the Aliaser daemon to monitor and sync alias tables.</help>
+    </field>
+    <field>
+        <id>general.defaultInterval</id>
+        <label>Default Interval (seconds)</label>
+        <type>text</type>
+        <help>Default check interval for new watchers. Individual watchers can override this. Range: 10-3600 seconds.</help>
+    </field>
+    <field>
+        <id>general.logLevel</id>
+        <label>Log Level</label>
+        <type>dropdown</type>
+        <help>Daemon logging verbosity. Debug logs every DNS lookup; Info logs changes; Warning logs failures only.</help>
+    </field>
+</form>
