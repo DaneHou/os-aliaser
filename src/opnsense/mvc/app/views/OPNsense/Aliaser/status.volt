@@ -12,119 +12,195 @@
         background: #fff;
     }
     .aliaser-card.has-error {
-        border-color: #d9534f;
+        border-left: 4px solid #d9534f;
     }
-    .aliaser-card .card-header {
+    .aliaser-card.healthy {
+        border-left: 4px solid #5cb85c;
+    }
+    .aliaser-card.stale {
+        border-left: 4px solid #f0ad4e;
+    }
+    .card-title {
         font-size: 16px;
         font-weight: bold;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .card-title .left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .metrics-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
         margin-bottom: 10px;
     }
-    .aliaser-metric {
-        display: inline-block;
-        margin-right: 20px;
-        color: #666;
+    .metric {
+        font-size: 13px;
     }
-    .aliaser-metric .value {
-        font-weight: bold;
+    .metric .label-text {
+        color: #888;
+    }
+    .metric .value {
+        font-weight: 600;
         color: #333;
     }
-    .aliaser-ips {
+    .ip-table {
         margin-top: 10px;
-        padding: 8px;
-        background: #f5f5f5;
+        background: #f8f8f8;
+        border: 1px solid #eee;
         border-radius: 3px;
-        font-family: monospace;
-        font-size: 12px;
-        max-height: 150px;
+        max-height: 200px;
         overflow-y: auto;
     }
+    .ip-table table {
+        margin: 0;
+        font-size: 12px;
+    }
+    .ip-table table td {
+        padding: 3px 10px;
+        font-family: monospace;
+    }
+    .daemon-bar {
+        padding: 10px 15px;
+        margin-bottom: 15px;
+        border-radius: 4px;
+        font-size: 13px;
+    }
+    .daemon-bar.running { background: #dff0d8; border: 1px solid #d6e9c6; }
+    .daemon-bar.stopped { background: #f2dede; border: 1px solid #ebccd1; }
 </style>
 
 <script>
-    function formatTimestamp(ts) {
+    function timeAgo(ts) {
         if (!ts || ts === 0) return 'Never';
-        var d = new Date(ts * 1000);
-        return d.toLocaleString();
+        var now = Math.floor(Date.now() / 1000);
+        var diff = now - ts;
+        if (diff < 5) return 'Just now';
+        if (diff < 60) return diff + 's ago';
+        if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+        if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+        return Math.floor(diff/86400) + 'd ago';
+    }
+
+    function formatTime(ts) {
+        if (!ts || ts === 0) return '-';
+        return new Date(ts * 1000).toLocaleString();
     }
 
     function loadStatus() {
         $.get('/api/aliaser/status/get', function(response) {
-            var container = $('#aliaser-status-container');
-            container.empty();
+            var container = $('#aliaser-watchers');
 
-            if (!response || !response.watchers || Object.keys(response.watchers).length === 0) {
-                container.html('<div class="alert alert-info">No watchers configured or daemon not running.</div>');
+            if (!response || response.status !== 'ok' || !response.watchers || !response.watchers.watchers) {
+                container.html('<div class="alert alert-warning">Unable to load status. Is the daemon running?</div>');
                 return;
             }
 
-            // Daemon status
-            if (response.status === 'ok' && response.watchers) {
-                $.each(response.watchers, function(name, w) {
-                    var hasError = w.consecutive_errors > 0;
-                    var card = $('<div class="aliaser-card' + (hasError ? ' has-error' : '') + '"></div>');
+            var data = response.watchers;
 
-                    var header = '<div class="card-header">' +
-                        '<span class="fa fa-fw ' + (w.type === 'dns' ? 'fa-globe' : 'fa-link') + '"></span> ' +
-                        name +
-                        ' <small class="text-muted">(' + w.alias + ')</small>' +
-                        '<button class="btn btn-xs btn-default pull-right btn-refresh" data-uuid="' + w.uuid + '">' +
-                        '<span class="fa fa-refresh"></span> Refresh Now</button>' +
-                        '</div>';
-                    card.append(header);
-
-                    var metrics = '<div>' +
-                        '<span class="aliaser-metric">Target: <span class="value">' + (w.target || '-') + '</span></span>' +
-                        '<span class="aliaser-metric">IPs: <span class="value">' + w.ip_count + '</span></span>' +
-                        '<span class="aliaser-metric">Interval: <span class="value">' + w.interval + 's</span></span>' +
-                        '<span class="aliaser-metric">Last Check: <span class="value">' + formatTimestamp(w.last_check) + '</span></span>' +
-                        '<span class="aliaser-metric">Last Change: <span class="value">' + formatTimestamp(w.last_change) + '</span></span>';
-
-                    if (hasError) {
-                        metrics += '<span class="aliaser-metric text-danger">Errors: <span class="value">' +
-                            w.consecutive_errors + '</span></span>' +
-                            '<br/><span class="text-danger"><small>' + w.last_error + '</small></span>';
-                    }
-                    metrics += '</div>';
-                    card.append(metrics);
-
-                    if (w.current_ips && w.current_ips.length > 0) {
-                        var ipList = '<div class="aliaser-ips">' + w.current_ips.join('<br/>') + '</div>';
-                        card.append(ipList);
-                    }
-
-                    container.append(card);
-                });
+            // Daemon status bar
+            var daemonBar = $('#daemon-status');
+            if (data.daemon && data.daemon.running) {
+                daemonBar.attr('class', 'daemon-bar running');
+                daemonBar.html('<span class="fa fa-check-circle text-success"></span> Daemon running (PID ' + data.daemon.pid + ')');
+            } else {
+                daemonBar.attr('class', 'daemon-bar stopped');
+                daemonBar.html('<span class="fa fa-times-circle text-danger"></span> Daemon not running');
             }
+
+            container.empty();
+
+            if (!data.watchers || Object.keys(data.watchers).length === 0) {
+                container.html('<div class="alert alert-info">No watchers configured. Go to Watchers tab to add one.</div>');
+                return;
+            }
+
+            $.each(data.watchers, function(name, w) {
+                var hasError = w.consecutive_errors > 0;
+                var isStale = w.last_check > 0 && (Date.now()/1000 - w.last_check) > w.interval * 3;
+                var cardClass = hasError ? 'has-error' : (isStale ? 'stale' : 'healthy');
+
+                var html = '<div class="aliaser-card ' + cardClass + '">';
+
+                // Title row
+                html += '<div class="card-title">';
+                html += '<div class="left">';
+                var icon = w.type === 'dns' ? 'fa-globe text-primary' : 'fa-link text-info';
+                html += '<span class="fa ' + icon + '"></span>';
+                html += '<span>' + name + '</span>';
+                html += '<span class="label label-' + (w.type === 'dns' ? 'primary' : 'info') + '">' + w.type.toUpperCase() + '</span>';
+                if (hasError) {
+                    html += '<span class="label label-danger">' + w.consecutive_errors + ' errors</span>';
+                }
+                html += '</div>';
+                html += '<button class="btn btn-xs btn-default btn-refresh" data-uuid="' + w.uuid + '">' +
+                    '<span class="fa fa-refresh"></span> Refresh Now</button>';
+                html += '</div>';
+
+                // Metrics
+                html += '<div class="metrics-row">';
+                html += '<div class="metric"><span class="label-text">Target:</span> <span class="value">' + (w.target || '-') + '</span></div>';
+                html += '<div class="metric"><span class="label-text">Alias:</span> <span class="value">' + w.alias + '</span></div>';
+                html += '<div class="metric"><span class="label-text">IPs in table:</span> <span class="value">' + w.ip_count + '</span></div>';
+                html += '<div class="metric"><span class="label-text">Interval:</span> <span class="value">' + w.interval + 's</span></div>';
+                html += '<div class="metric"><span class="label-text">Last checked:</span> <span class="value" title="' + formatTime(w.last_check) + '">' + timeAgo(w.last_check) + '</span></div>';
+                html += '<div class="metric"><span class="label-text">Last changed:</span> <span class="value" title="' + formatTime(w.last_change) + '">' + timeAgo(w.last_change) + '</span></div>';
+                html += '</div>';
+
+                // Error message
+                if (hasError && w.last_error) {
+                    html += '<div class="text-danger" style="margin-bottom:8px;font-size:12px;">' +
+                        '<span class="fa fa-exclamation-triangle"></span> ' + w.last_error + '</div>';
+                }
+
+                // IP table
+                if (w.current_ips && w.current_ips.length > 0) {
+                    html += '<div class="ip-table"><table class="table table-condensed">';
+                    $.each(w.current_ips, function(i, ip) {
+                        html += '<tr><td style="width:30px;color:#999;">' + (i+1) + '</td><td>' + ip + '</td></tr>';
+                    });
+                    html += '</table></div>';
+                } else {
+                    html += '<div class="text-muted" style="font-size:12px;margin-top:5px;">' +
+                        '<span class="fa fa-info-circle"></span> No IPs in table</div>';
+                }
+
+                html += '</div>';
+                container.append(html);
+            });
         });
     }
 
     $(document).ready(function() {
         loadStatus();
-        // Auto-refresh every 10 seconds
         setInterval(loadStatus, 10000);
 
-        // Manual refresh button
         $(document).on('click', '.btn-refresh', function() {
             var uuid = $(this).data('uuid');
             var btn = $(this);
-            btn.prop('disabled', true);
+            btn.prop('disabled', true).find('.fa').addClass('fa-spin');
             $.post('/api/aliaser/status/refresh/' + uuid, function() {
                 setTimeout(function() {
                     loadStatus();
-                    btn.prop('disabled', false);
-                }, 1000);
+                    btn.prop('disabled', false).find('.fa').removeClass('fa-spin');
+                }, 1500);
             });
         });
     });
 </script>
 
 <div class="content-box">
-    <div class="content-box-header">
-        <h3>{{ lang._('Aliaser Status') }}</h3>
+    <div id="daemon-status" class="daemon-bar stopped">
+        <span class="fa fa-spinner fa-spin"></span> Loading...
     </div>
-    <div class="content-box-main">
-        <div id="aliaser-status-container">
-            <div class="text-center"><span class="fa fa-spinner fa-spin"></span> Loading...</div>
+    <div id="aliaser-watchers">
+        <div class="text-center" style="padding:30px;">
+            <span class="fa fa-spinner fa-spin fa-2x"></span>
         </div>
     </div>
 </div>

@@ -15,7 +15,7 @@
         <id>watcher.type</id>
         <label>Type</label>
         <type>dropdown</type>
-        <help>DNS Hostname: resolve a FQDN to IPs. URL Table: fetch an IP list from a URL.</help>
+        <help>DNS Hostname: resolve a FQDN and sync resulting IPs into the alias. URL Table: fetch IP list from a URL.</help>
     </field>
     <field>
         <id>watcher.hostname</id>
@@ -27,30 +27,30 @@
         <id>watcher.url</id>
         <label>URL</label>
         <type>text</type>
-        <help>URL to fetch IP list from (for URL Table type). Example: https://example.com/iplist.txt</help>
+        <help>URL to fetch IP list from (for URL Table type). One IP/CIDR per line. Lines starting with # are ignored.</help>
     </field>
     <field>
         <id>watcher.alias</id>
         <label>Target Alias</label>
-        <type>text</type>
-        <help>Name of the OPNsense firewall alias (pf table) to update. Must already exist.</help>
+        <type>dropdown</type>
+        <help>OPNsense firewall alias to sync IPs into. Select an existing alias or create a new one. The alias is updated via pfctl -T replace (no filter reload).</help>
     </field>
     <field>
         <id>watcher.interval</id>
-        <label>Interval (seconds)</label>
+        <label>Check Interval (seconds)</label>
         <type>text</type>
-        <help>How often to check for changes. Range: 10-86400 seconds.</help>
+        <help>How often to check for changes. DNS: 10-300s recommended. URL: 300-86400s recommended.</help>
     </field>
     <field>
         <id>watcher.addressFamily</id>
         <label>Address Family</label>
         <type>dropdown</type>
-        <help>For DNS type: resolve IPv4 only, IPv6 only, or both.</help>
+        <help>For DNS type: resolve IPv4 only (A records), IPv6 only (AAAA), or both.</help>
     </field>
     <field>
         <id>watcher.description</id>
         <label>Description</label>
         <type>text</type>
-        <help>Optional description for this watcher.</help>
+        <help>Optional note for this watcher.</help>
     </field>
 </form>

@@ -20,12 +20,15 @@
 
 namespace OPNsense\Aliaser;
 
-class IndexController extends \OPNsense\Base\IndexController
+/**
+ * UI controller for the Aliaser Log page.
+ *
+ * OPNsense routes /ui/aliaser/log to LogController::indexAction().
+ */
+class LogController extends \OPNsense\Base\IndexController
 {
     public function indexAction()
     {
-        $this->view->generalForm = $this->getForm('general');
-        $this->view->watcherForm = $this->getForm('watcher');
-        $this->view->pick('OPNsense/Aliaser/index');
+        $this->view->pick('OPNsense/Aliaser/log');
     }
 }

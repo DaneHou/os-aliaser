@@ -6,6 +6,8 @@
             <pattern>api/aliaser/watcher/*</pattern>
             <pattern>api/aliaser/settings/*</pattern>
             <pattern>api/aliaser/service/*</pattern>
+            <pattern>api/aliaser/status/aliases</pattern>
+            <pattern>api/aliaser/status/createAlias</pattern>
         </patterns>
     </page-services-aliaser>
     <page-services-aliaser-status>

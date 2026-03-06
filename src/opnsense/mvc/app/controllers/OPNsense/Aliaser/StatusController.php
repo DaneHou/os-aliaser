@@ -20,12 +20,15 @@
 
 namespace OPNsense\Aliaser;
 
-class IndexController extends \OPNsense\Base\IndexController
+/**
+ * UI controller for the Aliaser Status page.
+ *
+ * OPNsense routes /ui/aliaser/status to StatusController::indexAction().
+ */
+class StatusController extends \OPNsense\Base\IndexController
 {
     public function indexAction()
     {
-        $this->view->generalForm = $this->getForm('general');
-        $this->view->watcherForm = $this->getForm('watcher');
-        $this->view->pick('OPNsense/Aliaser/index');
+        $this->view->pick('OPNsense/Aliaser/status');
     }
 }
