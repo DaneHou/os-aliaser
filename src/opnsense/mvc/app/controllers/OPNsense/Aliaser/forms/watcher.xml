@@ -15,7 +15,7 @@
         <id>watcher.type</id>
         <label>Type</label>
         <type>dropdown</type>
-        <help>DNS Hostname: resolve a FQDN and sync resulting IPs into the alias. URL Table: fetch IP list from a URL.</help>
+        <help>DNS Hostname: resolve a FQDN and sync resulting IPs into the alias. URL Table: fetch IP list from a URL (one IP/CIDR per line).</help>
     </field>
     <field>
         <id>watcher.hostname</id>
@@ -27,13 +27,13 @@
         <id>watcher.url</id>
         <label>URL</label>
         <type>text</type>
-        <help>URL to fetch IP list from (for URL Table type). One IP/CIDR per line. Lines starting with # are ignored.</help>
+        <help>URL to fetch IP list from (for URL Table type). One IP/CIDR per line, # comments ignored. Example: https://www.cloudflare.com/ips-v4</help>
     </field>
     <field>
         <id>watcher.alias</id>
         <label>Target Alias</label>
-        <type>dropdown</type>
-        <help>OPNsense firewall alias to sync IPs into. Select an existing alias or create a new one. The alias is updated via pfctl -T replace (no filter reload).</help>
+        <type>text</type>
+        <help>Name of the OPNsense firewall alias to update. Must be an External (Advanced) type alias. Use the button below to browse existing aliases.</help>
     </field>
     <field>
         <id>watcher.interval</id>
