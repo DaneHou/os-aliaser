@@ -51,19 +51,24 @@ def read_config():
         root = tree.getroot()
         aliaser = root.find('.//OPNsense/Aliaser')
         if aliaser is None:
-            return watchers, 'warn'
+            return watchers, 'warn', 0
 
         general = aliaser.find('general')
         log_level = 'warn'
+        max_table_entries = 0
         if general is not None:
             enabled = general.findtext('enabled', '0')
             if enabled != '1':
-                return watchers, log_level
+                return watchers, log_level, max_table_entries
             log_level = general.findtext('logLevel', 'warn')
+            try:
+                max_table_entries = int(general.findtext('maxTableEntries', '0'))
+            except (ValueError, TypeError):
+                max_table_entries = 0
 
         watcher_container = aliaser.find('watchers')
         if watcher_container is None:
-            return watchers, log_level
+            return watchers, log_level, max_table_entries
 
         for watcher_el in watcher_container:
             if watcher_el.tag != 'watcher':
@@ -75,7 +80,10 @@ def read_config():
                 'name': watcher_el.findtext('name', ''),
                 'type': watcher_el.findtext('type', 'dns'),
                 'hostname': watcher_el.findtext('hostname', ''),
+                'hostnames': watcher_el.findtext('hostnames', ''),
                 'url': watcher_el.findtext('url', ''),
+                'staticEntries': watcher_el.findtext('staticEntries', ''),
+                'includeAliases': watcher_el.findtext('includeAliases', ''),
                 'alias': watcher_el.findtext('alias', ''),
                 'interval': int(watcher_el.findtext('interval', '30')),
                 'addressFamily': watcher_el.findtext('addressFamily', 'ipv4'),
@@ -84,10 +92,10 @@ def read_config():
             if w['enabled'] == '1' and w['alias']:
                 watchers.append(w)
 
-        return watchers, log_level
+        return watchers, log_level, max_table_entries
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, f'aliaserd: config parse error: {e}')
-        return watchers, 'warn'
+        return watchers, 'warn', 0
 
 
 # ---------- DNS resolution ----------
@@ -191,10 +199,16 @@ def save_state(state):
 
 # ---------- Watcher logic ----------
 
-def check_watcher(watcher, state):
+def check_watcher(watcher, state, max_table_entries=0):
     """
     Check a single watcher. Returns True if the pf table was updated.
     Updates state dict in-place.
+
+    Composite merge:
+      1. Primary source (DNS hostnames or URL) -> merged_ips
+      2. staticEntries CSV -> add to merged_ips
+      3. includeAliases -> read each pf table, add to merged_ips
+      4. pfctl_replace(alias, sorted(merged_ips))
     """
     name = watcher['name']
     alias = watcher['alias']
@@ -209,37 +223,91 @@ def check_watcher(watcher, state):
         'last_change': 0,
         'last_error': '',
         'consecutive_errors': 0,
+        'history': [],
+        'alerts': [],
     })
+    # Ensure history/alerts keys exist for older state files
+    ws.setdefault('history', [])
+    ws.setdefault('alerts', [])
 
-    # Resolve new IPs
-    new_ips = None
+    merged_ips = set()
+    primary_ok = False
+
+    # Step 1: Primary source
     if wtype == 'dns':
-        hostname = watcher['hostname']
-        if not hostname:
+        # Use hostnames (plural) first, fall back to hostname (legacy)
+        hostnames_str = watcher.get('hostnames', '').strip()
+        if hostnames_str:
+            dns_hosts = [h.strip() for h in hostnames_str.split(',') if h.strip()]
+        else:
+            legacy = watcher.get('hostname', '').strip()
+            dns_hosts = [legacy] if legacy else []
+
+        if not dns_hosts and not watcher.get('staticEntries', '').strip() and not watcher.get('includeAliases', '').strip():
             return False
-        new_ips = resolve_dns(hostname, watcher.get('addressFamily', 'ipv4'))
-        if not new_ips:
-            ws['last_error'] = f'DNS resolution returned no results for {hostname}'
+
+        af = watcher.get('addressFamily', 'ipv4')
+        for hostname in dns_hosts:
+            ips = resolve_dns(hostname, af)
+            if ips:
+                merged_ips.update(ips)
+                primary_ok = True
+
+        if dns_hosts and not primary_ok:
+            ws['last_error'] = f'DNS resolution returned no results for {", ".join(dns_hosts)}'
             ws['consecutive_errors'] = ws.get('consecutive_errors', 0) + 1
             ws['last_check'] = time.time()
             syslog.syslog(syslog.LOG_WARNING,
-                          f'aliaserd: [{name}] no DNS results for {hostname} '
+                          f'aliaserd: [{name}] no DNS results for {", ".join(dns_hosts)} '
                           f'(errors: {ws["consecutive_errors"]})')
-            return False
+            # Don't return yet — static/include sources may still contribute
 
     elif wtype == 'urltable':
-        url = watcher['url']
-        if not url:
-            return False
-        new_ips = fetch_url(url)
-        if new_ips is None:
-            ws['consecutive_errors'] = ws.get('consecutive_errors', 0) + 1
-            ws['last_check'] = time.time()
+        url = watcher.get('url', '').strip()
+        if url:
+            result = fetch_url(url)
+            if result is None:
+                ws['consecutive_errors'] = ws.get('consecutive_errors', 0) + 1
+                ws['last_check'] = time.time()
+                # Don't return yet — static/include sources may still contribute
+            elif result:
+                merged_ips.update(result)
+                primary_ok = True
+        elif not watcher.get('staticEntries', '').strip() and not watcher.get('includeAliases', '').strip():
             return False
 
+    # Step 2: Static entries
+    static_str = watcher.get('staticEntries', '').strip()
+    if static_str:
+        for entry in static_str.split(','):
+            entry = entry.strip()
+            if entry:
+                merged_ips.add(entry)
+
+    # Step 3: Include aliases (read from their pf tables)
+    include_str = watcher.get('includeAliases', '').strip()
+    if include_str:
+        for inc_alias in include_str.split(','):
+            inc_alias = inc_alias.strip()
+            if not inc_alias or inc_alias == alias:  # Skip self-reference
+                continue
+            inc_ips = pfctl_show(inc_alias)
+            if inc_ips:
+                merged_ips.update(inc_ips)
+            else:
+                syslog.syslog(syslog.LOG_WARNING,
+                              f'aliaserd: [{name}] include alias {inc_alias} not accessible or empty')
+
+    new_ips = sorted(merged_ips)
+
+    # If nothing resolved from any source and no static/include, it's an error
+    if not new_ips and not primary_ok and not static_str and not include_str:
+        return False
+
     ws['last_check'] = time.time()
-    ws['last_error'] = ''
-    ws['consecutive_errors'] = 0
+    if primary_ok or not (watcher.get('hostnames', '').strip() or watcher.get('hostname', '').strip() or watcher.get('url', '').strip()):
+        ws['last_error'] = ''
+        ws['consecutive_errors'] = 0
 
     # Compare with current table
     current_ips = pfctl_show(alias)
@@ -262,6 +330,35 @@ def check_watcher(watcher, state):
         syslog.syslog(syslog.LOG_NOTICE,
                       f'aliaserd: [{name}] updated {alias}: {old_count} -> {new_count} entries '
                       f'({", ".join(new_ips[:5])}{"..." if new_count > 5 else ""})')
+
+        # Health monitoring: empty table alert
+        alerts = []
+        if new_count == 0 and old_count > 0:
+            alert_msg = f'Table went from {old_count} entries to 0'
+            syslog.syslog(syslog.LOG_WARNING, f'aliaserd: [{name}] ALERT: {alert_msg}')
+            alerts.append({'type': 'empty', 'message': alert_msg, 'timestamp': time.time()})
+
+        # Health monitoring: table size threshold
+        if max_table_entries > 0 and new_count > max_table_entries:
+            alert_msg = f'Table has {new_count} entries (threshold: {max_table_entries})'
+            syslog.syslog(syslog.LOG_WARNING, f'aliaserd: [{name}] ALERT: {alert_msg}')
+            alerts.append({'type': 'threshold', 'message': alert_msg, 'timestamp': time.time()})
+
+        ws['alerts'] = alerts
+
+        # Change history: record diff
+        added = sorted(set(new_ips) - set(current_ips))
+        removed = sorted(set(current_ips) - set(new_ips))
+        history_entry = {
+            'timestamp': time.time(),
+            'old_count': old_count,
+            'new_count': new_count,
+            'added': added[:50],  # Cap to avoid bloated state
+            'removed': removed[:50],
+        }
+        ws['history'].append(history_entry)
+        ws['history'] = ws['history'][-20:]  # Keep last 20 changes
+
         return True
     return False
 
@@ -292,7 +389,7 @@ def run_daemon():
     last_run = {}
 
     while running:
-        watchers, log_level = read_config()
+        watchers, log_level, max_table_entries = read_config()
         if not watchers:
             time.sleep(10)
             continue
@@ -307,7 +404,7 @@ def run_daemon():
 
             if now - last >= interval:
                 try:
-                    changed = check_watcher(w, state)
+                    changed = check_watcher(w, state, max_table_entries)
                     if changed:
                         save_state(state)
                 except Exception as e:
@@ -401,24 +498,56 @@ def cmd_status():
         'watchers': {},
     }
 
-    watchers, _ = read_config()
+    watchers, _, max_table_entries = read_config()
     for w in watchers:
         name = w['name']
         ws = state.get(name, {})
         # Also get live table content
         current_table = pfctl_show(w['alias'])
+        ip_count = len(current_table) if current_table else 0
+
+        # Determine target display
+        if w['type'] == 'dns':
+            target = w.get('hostnames', '').strip() or w.get('hostname', '')
+        else:
+            target = w.get('url', '')
+
+        # Build sources summary
+        sources = []
+        if target:
+            sources.append(w['type'].upper() + ': ' + target)
+        if w.get('staticEntries', '').strip():
+            sources.append('Static: ' + w['staticEntries'].strip())
+        if w.get('includeAliases', '').strip():
+            sources.append('Include: ' + w['includeAliases'].strip())
+
+        # Compute active alerts
+        alerts = ws.get('alerts', [])
+        if max_table_entries > 0 and ip_count > max_table_entries:
+            alerts = [a for a in alerts if a.get('type') != 'threshold']
+            alerts.append({
+                'type': 'threshold',
+                'message': f'Table has {ip_count} entries (threshold: {max_table_entries})',
+                'timestamp': time.time(),
+            })
+
         output['watchers'][name] = {
             'uuid': w['uuid'],
             'type': w['type'],
-            'target': w['hostname'] if w['type'] == 'dns' else w['url'],
+            'target': target,
+            'sources': sources,
             'alias': w['alias'],
             'interval': w['interval'],
+            'staticEntries': w.get('staticEntries', ''),
+            'includeAliases': w.get('includeAliases', ''),
             'current_ips': current_table or [],
-            'ip_count': len(current_table) if current_table else 0,
+            'ip_count': ip_count,
             'last_check': ws.get('last_check', 0),
             'last_change': ws.get('last_change', 0),
             'last_error': ws.get('last_error', ''),
             'consecutive_errors': ws.get('consecutive_errors', 0),
+            'alerts': alerts,
+            'history': ws.get('history', []),
         }
 
     print(json.dumps(output, indent=2))
@@ -429,7 +558,7 @@ def cmd_reconfigure():
     cmd_stop()
     time.sleep(0.5)
 
-    watchers, _ = read_config()
+    watchers, _, _ = read_config()
     if not watchers:
         print(json.dumps({'status': 'ok', 'message': 'no watchers configured'}))
         return
@@ -440,12 +569,12 @@ def cmd_reconfigure():
 
 def cmd_refresh(uuid):
     """Force immediate refresh of a single watcher by UUID."""
-    watchers, _ = read_config()
+    watchers, _, max_table_entries = read_config()
     state = load_state()
 
     for w in watchers:
         if w['uuid'] == uuid:
-            changed = check_watcher(w, state)
+            changed = check_watcher(w, state, max_table_entries)
             save_state(state)
             print(json.dumps({
                 'status': 'ok',

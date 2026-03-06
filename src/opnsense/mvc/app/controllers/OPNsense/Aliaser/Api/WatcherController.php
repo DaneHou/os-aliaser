@@ -41,7 +41,7 @@ class WatcherController extends ApiMutableModelControllerBase
     {
         return $this->searchBase(
             'watchers.watcher',
-            ['enabled', 'name', 'type', 'hostname', 'url', 'alias', 'interval', 'description'],
+            ['enabled', 'name', 'type', 'hostname', 'hostnames', 'url', 'staticEntries', 'includeAliases', 'alias', 'interval', 'description'],
             'name'
         );
     }

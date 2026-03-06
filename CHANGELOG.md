@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-03-05
+
+### Composite Watchers
+
+- **Multiple hostnames** — DNS watchers now accept comma-separated FQDNs (e.g., `office.example.com, home.ddns.net`), all resolved and merged into the target alias
+- **Static IPs/CIDRs** — optional static entries always included in the alias (e.g., `10.0.0.0/8, 192.168.1.0/24`)
+- **Include aliases** — merge IPs from other existing pf tables into the target (reads live table contents, no cron delay)
+- All three sources merge before `pfctl -T replace` — a single watcher can combine DNS, static, and alias sources
+- Backwards compatible: existing single-hostname watchers continue to work unchanged
+
+### Alias Health Monitoring
+
+- **Empty table alerts** — warning when a table goes from N entries to 0 (addresses [#3737](https://github.com/opnsense/core/issues/3737), [#1396](https://github.com/opnsense/core/issues/1396))
+- **Table size threshold** — configurable max entry count in General settings; warns when exceeded (addresses [#4669](https://github.com/opnsense/core/issues/4669), [#1555](https://github.com/opnsense/core/issues/1555))
+- **Change history** — per-watcher log of last 20 changes with timestamps, added/removed IPs, and entry counts (addresses [#6565](https://github.com/opnsense/core/issues/6565))
+- Alerts shown as color-coded badges on the status dashboard
+
+### Status Page Enhancements
+
+- **Service controls** — Start, Stop, Restart buttons directly on the status page
+- **Sources summary** — shows all composite sources (DNS, static, include) per watcher
+- **Expandable change history** — click to view full diff log with added/removed IPs
+
 ## [1.0.0] - 2026-03-05
 
 ### Initial Release

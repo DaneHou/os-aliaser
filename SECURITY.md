@@ -63,6 +63,10 @@ This is required because `pfctl` table operations need root privileges.
 
 - Watcher names are restricted to `[a-zA-Z0-9_]{1,32}` via MVC model validation.
 - Hostnames are validated against FQDN patterns.
+- Multi-hostnames are restricted to `[a-zA-Z0-9\-.,\s]{0,512}` (comma-separated FQDNs).
+- Static entries are restricted to `[0-9a-fA-F:./,\s]{0,1024}` (IPs and CIDRs only).
+- Include alias names are restricted to `[a-zA-Z0-9_,\s]{0,256}` (valid pf table names).
+- Self-referencing in include aliases is skipped to prevent loops.
 - URLs are validated to start with `http://` or `https://`.
 - Alias names are validated to `[a-zA-Z0-9_]{1,31}` (pf table name limits).
 - All user input passes through OPNsense MVC field validators before reaching
