@@ -99,6 +99,9 @@ Before submitting a PR, verify the following on an OPNsense VM:
 - [ ] Services > Aliaser > Status shows the watcher with resolved IPs
 - [ ] "Refresh Now" button triggers an immediate check
 - [ ] Change the hostname's DNS record (or use a different hostname) — alias updates
+- [ ] Composite: add multiple hostnames, static IPs, and include aliases — all merged
+- [ ] Status page shows sources summary and change history
+- [ ] Start/Stop/Restart buttons on status page work correctly
 - [ ] Disable a watcher and apply — it stops being checked
 - [ ] `make uninstall` cleanly removes the plugin
 - [ ] Reboot the OPNsense VM — daemon restarts and watchers resume

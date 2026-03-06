@@ -7,6 +7,10 @@ A smart firewall alias management plugin for OPNsense. Monitors DNS hostnames
 and URL feeds, then syncs resolved IPs into pf tables in real-time using
 atomic `pfctl -T replace` — no filter reload, no dropped connections.
 
+Supports **composite watchers** that merge multiple DNS hostnames, static
+IPs/CIDRs, and existing alias tables into a single target — with built-in
+health monitoring, empty-table alerts, and change history.
+
 ## Why This Plugin?
 
 OPNsense's built-in alias resolution has well-documented limitations
@@ -17,9 +21,13 @@ OPNsense's built-in alias resolution has well-documented limitations
 | | OPNsense Built-in | Aliaser |
 |---|---|---|
 | Update speed | ~300s (cron + jitter) | 10s–3600s (configurable per watcher) |
+| Composite sources | No (one source per alias) | DNS + static IPs + other aliases merged |
+| Nested alias updates | 1-min cron delay per level | Instant — reads live pf tables |
 | Failure handling | Silent — no logs, no alerts | Logs failures, tracks consecutive errors |
-| Visibility | Manual `pfctl -T show` per alias | Live dashboard with all watchers |
-| Change tracking | None | Before/after logging via syslog |
+| Empty table detection | None ([#3737](https://github.com/opnsense/core/issues/3737)) | Alert when table goes from N→0 |
+| Table size warnings | None ([#4669](https://github.com/opnsense/core/issues/4669)) | Configurable threshold alerts |
+| Change tracking | None ([#6565](https://github.com/opnsense/core/issues/6565)) | Full diff history (last 20 changes) |
+| Visibility | Manual `pfctl -T show` per alias | Live dashboard with service controls |
 | Management | Cron + settings scattered across UI | One page, self-managed daemon |
 
 ## How It Works
@@ -30,13 +38,17 @@ Aliaser Daemon (Python)
   |-- DNS Watcher: resolve office.example.com every 15s
   |     --> pfctl -t Office_IPs -T replace 1.2.3.4
   |
-  |-- DNS Watcher: resolve home.ddns.net every 10s
-  |     --> pfctl -t Home_IPs -T replace 5.6.7.8
+  |-- Composite Watcher "My_Access":
+  |     DNS: office.example.com, home.ddns.net
+  |     + Static: 192.168.0.0/16, 10.0.0.0/8
+  |     + Include: Public_IP (read from its pf table)
+  |     --> pfctl -t My_Access -T replace [all merged IPs]
   |
   |-- URL Watcher: fetch cloudflare-ips.txt every 1h
   |     --> pfctl -t CF_IPs -T replace 103.21.244.0/22 ...
   |
-  --> All changes logged to syslog with before/after diff
+  --> All changes logged to syslog with diff history
+  --> Empty table alerts, size threshold warnings
 ```
 
 1. Configure watchers in the plugin UI (Services > Aliaser > Watchers)
@@ -48,10 +60,13 @@ Aliaser Daemon (Python)
 
 - **DNS watchers** — track FQDN changes with configurable intervals (10s–3600s)
 - **URL feed watchers** — sync IP lists from URLs (threat feeds, cloud provider ranges)
+- **Composite watchers** — merge multiple DNS hostnames, static IPs/CIDRs, and existing alias tables into a single target
 - **Atomic updates** — `pfctl -T replace` only, never triggers filter reload
 - **Change detection** — only updates pf tables when content actually changes
+- **Health monitoring** — empty table alerts, configurable size threshold warnings
+- **Change history** — per-watcher diff log (last 20 changes with added/removed IPs)
 - **Failure alerting** — logs DNS/fetch failures, tracks consecutive error count
-- **Status dashboard** — live view of all watchers with current IPs, timestamps, errors
+- **Status dashboard** — live view with service controls (Start/Stop/Restart), current IPs, timestamps, alerts
 - **Manual refresh** — "Refresh Now" button per watcher for instant updates
 - **Alias picker** — browse and select existing aliases, or create new External aliases inline
 - **IPv4 + IPv6** — dual-stack DNS resolution (A + AAAA records)
@@ -78,7 +93,9 @@ Hard-refresh your browser (Ctrl+Shift+R) after install, then go to
 
 2. **Add a watcher** — Services > Aliaser > Watchers, click +:
    - **Type:** DNS Hostname (or URL Table)
-   - **Hostname:** `office.example.com`
+   - **Hostnames:** `office.example.com` (comma-separated for multiple)
+   - **Static IPs/CIDRs:** (optional) e.g., `10.0.0.0/8` — always included
+   - **Include Aliases:** (optional) merge IPs from other pf tables
    - **Target Alias:** click the alias picker button to select `Office_IP`
    - **Interval:** `30` (seconds)
 
@@ -102,6 +119,14 @@ Track a remote office or home IP that uses DDNS:
 Keep Cloudflare, AWS, or Azure IP ranges up to date:
 - Watcher: URL → `https://www.cloudflare.com/ips-v4` → `CF_IPv4` alias (interval: 1h)
 - Firewall rule: only allow `CF_IPv4` to reach your web server
+
+### Composite Access Control
+Combine multiple sources into one alias for a firewall rule:
+- Watcher: DNS → `office.example.com, home.ddns.net`
+  + Static: `192.168.1.0/24`
+  + Include: `VPN_Clients` (another alias)
+  → `Trusted_Sources` alias (interval: 30s)
+- Firewall rule: allow `Trusted_Sources` to access management interfaces
 
 ### Threat Feed Blocklisting
 Block known-bad IPs from a threat intelligence feed:
@@ -142,7 +167,7 @@ src/
     │   ├── models/OPNsense/Aliaser/       # Data model, menu, ACL
     │   └── views/OPNsense/Aliaser/        # Volt templates (3 pages)
     ├── scripts/OPNsense/Aliaser/
-    │   └── aliaserd.py                    # Daemon (~350 lines Python)
+    │   └── aliaserd.py                    # Daemon (~600 lines Python)
     └── service/conf/actions.d/
         └── actions_aliaser.conf           # configd action definitions
 ```
