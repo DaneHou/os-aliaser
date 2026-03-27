@@ -114,6 +114,13 @@
                     </OptionValues>
                 </addressFamily>
 
+                <!-- DNS: optional external DNS server to query directly -->
+                <dnsServer type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^([0-9]{1,3}\.){3}[0-9]{1,3}$|^$/</Mask>
+                    <ValidationMessage>Enter a valid IPv4 address (e.g. 1.1.1.1) or leave empty for system default</ValidationMessage>
+                </dnsServer>
+
                 <description type="TextField">
                     <Required>N</Required>
                     <Mask>/^.{0,128}$/</Mask>
