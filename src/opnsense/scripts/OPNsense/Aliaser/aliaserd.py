@@ -88,6 +88,7 @@ def read_config():
                 'interval': int(watcher_el.findtext('interval', '30')),
                 'addressFamily': watcher_el.findtext('addressFamily', 'ipv4'),
                 'description': watcher_el.findtext('description', ''),
+                'dnsServer': watcher_el.findtext('dnsServer', ''),
             }
             if w['enabled'] == '1' and w['alias']:
                 watchers.append(w)
@@ -100,8 +101,45 @@ def read_config():
 
 # ---------- DNS resolution ----------
 
-def resolve_dns(hostname, address_family='ipv4'):
-    """Resolve a hostname to a sorted list of unique IPs."""
+def resolve_dns(hostname, address_family='ipv4', dns_server=None):
+    """Resolve a hostname to a sorted list of unique IPs.
+
+    If dns_server is provided, query it directly via dnspython
+    (bypasses OS resolver cache). Otherwise use socket.getaddrinfo.
+    """
+    if dns_server:
+        try:
+            import dns.resolver
+            import dns.exception
+        except ImportError:
+            syslog.syslog(syslog.LOG_ERR,
+                          'aliaserd: dnspython not installed — '
+                          'run: pkg install py311-dnspython')
+            return []
+
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = [dns_server]
+        resolver.lifetime = 10
+
+        ips = set()
+        rdtypes = []
+        if address_family in ('ipv4', 'both'):
+            rdtypes.append('A')
+        if address_family in ('ipv6', 'both'):
+            rdtypes.append('AAAA')
+
+        for rdtype in rdtypes:
+            try:
+                answers = resolver.resolve(hostname, rdtype)
+                for rdata in answers:
+                    ips.add(rdata.address)
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer,
+                    dns.resolver.NoNameservers, dns.exception.Timeout):
+                pass
+
+        return sorted(ips)
+
+    # Default: system resolver
     ips = set()
     families = []
     if address_family in ('ipv4', 'both'):
@@ -247,8 +285,9 @@ def check_watcher(watcher, state, max_table_entries=0):
             return False
 
         af = watcher.get('addressFamily', 'ipv4')
+        dns_server = watcher.get('dnsServer', '').strip() or None
         for hostname in dns_hosts:
-            ips = resolve_dns(hostname, af)
+            ips = resolve_dns(hostname, af, dns_server=dns_server)
             if ips:
                 merged_ips.update(ips)
                 primary_ok = True
@@ -538,6 +577,7 @@ def cmd_status():
             'sources': sources,
             'alias': w['alias'],
             'interval': w['interval'],
+            'dnsServer': w.get('dnsServer', ''),
             'staticEntries': w.get('staticEntries', ''),
             'includeAliases': w.get('includeAliases', ''),
             'current_ips': current_table or [],
