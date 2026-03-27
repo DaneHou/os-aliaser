@@ -66,6 +66,12 @@
         <help>For DNS type: resolve IPv4 only (A records), IPv6 only (AAAA), or both.</help>
     </field>
     <field>
+        <id>watcher.dnsServer</id>
+        <label>DNS Server</label>
+        <type>text</type>
+        <help>Query this DNS server directly instead of the system resolver (bypasses DNS cache). Leave empty to use the system default. Example: 1.1.1.1</help>
+    </field>
+    <field>
         <id>watcher.description</id>
         <label>Description</label>
         <type>text</type>
