@@ -101,20 +101,26 @@ def read_config():
 
 # ---------- DNS resolution ----------
 
+_dnspython_import_failed = False
+
 def resolve_dns(hostname, address_family='ipv4', dns_server=None):
     """Resolve a hostname to a sorted list of unique IPs.
 
     If dns_server is provided, query it directly via dnspython
     (bypasses OS resolver cache). Otherwise use socket.getaddrinfo.
     """
+    global _dnspython_import_failed
+
     if dns_server:
         try:
             import dns.resolver
             import dns.exception
         except ImportError:
-            syslog.syslog(syslog.LOG_ERR,
-                          'aliaserd: dnspython not installed — '
-                          'run: pkg install py311-dnspython')
+            if not _dnspython_import_failed:
+                _dnspython_import_failed = True
+                syslog.syslog(syslog.LOG_ERR,
+                              'aliaserd: dnspython not installed — '
+                              'run: pkg install py311-dnspython')
             return []
 
         resolver = dns.resolver.Resolver(configure=False)
@@ -134,7 +140,8 @@ def resolve_dns(hostname, address_family='ipv4', dns_server=None):
                 for rdata in answers:
                     ips.add(rdata.address)
             except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer,
-                    dns.resolver.NoNameservers, dns.exception.Timeout):
+                    dns.resolver.NoNameservers, dns.exception.Timeout,
+                    dns.exception.DNSException):
                 pass
 
         return sorted(ips)
