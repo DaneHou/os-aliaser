@@ -5,7 +5,7 @@
 
 <script>
     $(document).ready(function() {
-        ajaxGet('/api/diagnostics/log/core/syslog', { 'severity': '', 'limit': 500, 'module': 'aliaser' }, function(data) {
+        ajaxGet('/api/diagnostics/log/core/syslog', { 'severity': '', 'limit': 500, 'module': 'core', 'filename': 'system', 'filter': 'aliaserd' }, function(data) {
             var tbody = $('#aliaser-log-table tbody');
             tbody.empty();
             if (data && data.rows) {

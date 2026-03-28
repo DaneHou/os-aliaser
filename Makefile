@@ -76,11 +76,6 @@ install-plugin:
 	@mkdir -p $(ACTIONS_DIR)
 	@cp src/opnsense/service/conf/actions.d/actions_aliaser.conf $(ACTIONS_DIR)/
 
-	# Syslog template
-	@mkdir -p $(DESTDIR)$(PREFIX)/opnsense/service/templates/OPNsense/Syslog/local
-	@cp src/opnsense/service/templates/OPNsense/Syslog/local/aliaser.conf \
-		$(DESTDIR)$(PREFIX)/opnsense/service/templates/OPNsense/Syslog/local/
-
 	# Runtime directories
 	@mkdir -p /var/run/aliaser
 	@mkdir -p /var/log/aliaser
@@ -97,9 +92,6 @@ activate:
 	@php -l $(MVC_DIR)/models/OPNsense/Aliaser/Aliaser.php 2>&1 || true
 	# Restart configd to pick up new actions
 	@service configd restart 2>/dev/null || true
-	# Reload syslog-ng to pick up log routing
-	@configctl template reload OPNsense/Syslog 2>/dev/null || true
-	@service syslog-ng restart 2>/dev/null || true
 	# Restart web GUI
 	@configctl webgui restart 2>/dev/null || service php_fpm restart 2>/dev/null || true
 	@echo ""
@@ -117,9 +109,6 @@ uninstall:
 	@rm -f $(ACTIONS_DIR)/actions_aliaser.conf
 	@rm -f $(PLUGINS_DIR)/aliaser.inc
 	@rm -f $(DESTDIR)/etc/newsyslog.conf.d/aliaser.conf
-	@rm -f $(DESTDIR)$(PREFIX)/opnsense/service/templates/OPNsense/Syslog/local/aliaser.conf
-	@configctl template reload OPNsense/Syslog 2>/dev/null || true
-	@service syslog-ng restart 2>/dev/null || true
 	@rm -f /var/run/aliaser.pid
 	@rm -rf /var/run/aliaser
 	@rm -f /var/lib/php/tmp/opnsense_menu_cache.xml 2>/dev/null || true
