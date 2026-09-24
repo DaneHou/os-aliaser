@@ -94,6 +94,11 @@ activate:
 	@service configd restart 2>/dev/null || true
 	# Restart web GUI
 	@configctl webgui restart 2>/dev/null || service php_fpm restart 2>/dev/null || true
+	# Restart the daemon if it was running, so upgrades take effect
+	@if [ -f /var/run/aliaser.pid ]; then \
+		echo ">>> Restarting aliaser daemon..."; \
+		$(SCRIPTS_DIR)/aliaserd.py restart; \
+	fi
 	@echo ""
 	@echo ">>> Plugin activated."
 	@echo ">>> Hard-refresh your browser (Ctrl+Shift+R) to see the menu."

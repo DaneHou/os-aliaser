@@ -60,6 +60,15 @@ TABLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_]{1,31}$')
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')
 # pf tables OPNsense itself maintains; a watcher must never overwrite them.
 # Interface network tables (__lan_network etc.) are covered by the '__' prefix.
+# general.logLevel -> syslog mask. "warn" keeps NOTICE so table changes
+# still show up in the log by default.
+LOG_LEVELS = {
+    'error': syslog.LOG_UPTO(syslog.LOG_ERR),
+    'warn': syslog.LOG_UPTO(syslog.LOG_NOTICE),
+    'info': syslog.LOG_UPTO(syslog.LOG_INFO),
+    'debug': syslog.LOG_UPTO(syslog.LOG_DEBUG),
+}
+
 RESERVED_TABLES = {'bogons', 'bogonsv6', 'virusprot', 'sshlockout', 'webConfiguratorlockout'}
 
 
@@ -125,6 +134,7 @@ def read_config():
         general = aliaser.find('general')
         log_level = 'warn'
         max_table_entries = 0
+        default_interval = 30
         if general is not None:
             enabled = general.findtext('enabled', '0')
             if enabled != '1':
@@ -134,6 +144,11 @@ def read_config():
                 max_table_entries = int(general.findtext('maxTableEntries', '0'))
             except (ValueError, TypeError):
                 max_table_entries = 0
+            try:
+                default_interval = max(MIN_INTERVAL, int(general.findtext('defaultInterval') or 30))
+            except (ValueError, TypeError):
+                default_interval = 30
+        syslog.setlogmask(LOG_LEVELS.get(log_level, LOG_LEVELS['warn']))
 
         watcher_container = aliaser.find('watchers')
         if watcher_container is None:
@@ -144,12 +159,13 @@ def read_config():
                 continue
             uuid = watcher_el.get('uuid', '')
             name = watcher_el.findtext('name', '')
+            raw_interval = (watcher_el.findtext('interval') or '').strip()
             try:
-                interval = max(MIN_INTERVAL, int(watcher_el.findtext('interval', '30')))
-            except (ValueError, TypeError):
+                interval = max(MIN_INTERVAL, int(raw_interval)) if raw_interval else default_interval
+            except ValueError:
                 syslog.syslog(syslog.LOG_WARNING,
-                              f'aliaserd: [{name}] invalid interval, using 30s')
-                interval = 30
+                              f'aliaserd: [{name}] invalid interval, using {default_interval}s')
+                interval = default_interval
             w = {
                 'uuid': uuid,
                 'enabled': watcher_el.findtext('enabled', '0'),
@@ -672,6 +688,8 @@ class Scheduler:
         # waiting for their own interval.
         for w in watchers:
             if alias in split_csv(w['includeAliases']) and alias not in w.get('cyclicIncludes', []):
+                syslog.syslog(syslog.LOG_INFO,
+                              f'aliaserd: [{w["name"]}] included table {alias} changed, re-merging now')
                 self.next_due[w['name']] = now
 
 

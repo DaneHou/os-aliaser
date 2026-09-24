@@ -81,3 +81,26 @@ def test_include_cycles_detected(env):
 def test_refresh_rejects_non_uuid(env, capsys):
     env.mod.cmd_refresh('$(id)')
     assert 'invalid uuid' in capsys.readouterr().out
+
+
+def test_log_level_setting_applies_syslog_mask(env):
+    syslog = env.mod.syslog
+    for level, highest_shown, first_hidden in [('error', syslog.LOG_ERR, syslog.LOG_WARNING),
+                                               ('warn', syslog.LOG_NOTICE, syslog.LOG_INFO),
+                                               ('debug', syslog.LOG_DEBUG, None)]:
+        env.write_config(general=f'<logLevel>{level}</logLevel>')
+        env.mod.read_config()
+        mask = syslog.setlogmask(0)  # 0 = query without changing
+        assert mask & syslog.LOG_MASK(highest_shown), level
+        if first_hidden is not None:
+            assert not mask & syslog.LOG_MASK(first_hidden), level
+    syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
+
+
+def test_empty_interval_uses_default_interval(env):
+    env.write_config({'uuid': UUID1, 'name': 'a', 'alias': 'TA', 'interval': ''},
+                     {'uuid': UUID1, 'name': 'b', 'alias': 'TB', 'interval': 5},
+                     general='<defaultInterval>120</defaultInterval>')
+    watchers, _, _ = env.mod.read_config()
+    # empty -> default; below the minimum -> clamped
+    assert [(w['name'], w['interval']) for w in watchers] == [('a', 120), ('b', 10)]

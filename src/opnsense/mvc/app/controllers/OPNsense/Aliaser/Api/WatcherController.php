@@ -48,7 +48,12 @@ class WatcherController extends ApiMutableModelControllerBase
 
     public function getWatcherAction($uuid = null)
     {
-        return $this->getBase('watcher', 'watchers.watcher', $uuid);
+        $result = $this->getBase('watcher', 'watchers.watcher', $uuid);
+        if ($uuid === null && isset($result['watcher'])) {
+            // New watcher: pre-fill the interval from the general settings
+            $result['watcher']['interval'] = (string)$this->getModel()->general->defaultInterval;
+        }
+        return $result;
     }
 
     public function addWatcherAction()
