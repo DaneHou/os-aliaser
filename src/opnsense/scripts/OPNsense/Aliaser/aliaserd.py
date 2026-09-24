@@ -25,6 +25,7 @@ Architecture:
     - Logs to syslog facility 'aliaser'
 """
 
+import concurrent.futures
 import fcntl
 import ipaddress
 import json
@@ -398,13 +399,50 @@ class locked_state:
 
 # ---------- Watcher logic ----------
 
-def check_watcher(watcher, state, max_table_entries=0):
+def gather_primary(watcher):
+    """Query the watcher's primary source (DNS or URL). Network I/O only.
+
+    Touches no state and no pf tables, so it is safe to run in a worker
+    thread. Returns {'desc': str, 'ips': set or None}; ips is None when the
+    source failed, desc is '' when the watcher has no primary source.
     """
-    Check a single watcher. Returns True if the pf table was updated.
-    Updates state dict in-place.
+    primary = {'desc': '', 'ips': None}
+    if watcher['type'] == 'dns':
+        # Use hostnames (plural) first, fall back to hostname (legacy)
+        dns_hosts = split_csv(watcher.get('hostnames', '')) or split_csv(watcher.get('hostname', ''))
+        if dns_hosts:
+            primary['desc'] = ', '.join(dns_hosts)
+            af = watcher.get('addressFamily', 'ipv4')
+            dns_server = watcher.get('dnsServer', '').strip() or None
+            resolved = set()
+            for hostname in dns_hosts:
+                resolved.update(resolve_dns(hostname, af, dns_server=dns_server))
+            if resolved:
+                primary['ips'] = resolved
+    elif watcher['type'] == 'urltable':
+        url = watcher.get('url', '').strip()
+        if url:
+            primary['desc'] = url
+            # An empty feed is treated as a failure too: it is far more often a
+            # broken mirror or captive portal than a list that is really empty.
+            result = fetch_url(url)
+            if result:
+                primary['ips'] = set(result)
+    return primary
+
+
+def check_watcher(watcher, state, max_table_entries=0):
+    """Gather + apply in one go. Returns True if the pf table was updated."""
+    return apply_watcher(watcher, state, gather_primary(watcher), max_table_entries)
+
+
+def apply_watcher(watcher, state, primary, max_table_entries=0):
+    """
+    Merge a watcher's sources and update its pf table. Returns True if the
+    table was updated. Updates state dict in-place.
 
     Composite merge:
-      1. Primary source (DNS hostnames or URL) -> merged_ips
+      1. Primary source (result of gather_primary) -> merged_ips
       2. staticEntries CSV -> add to merged_ips
       3. includeAliases -> read each pf table, add to merged_ips
       4. pfctl_replace(alias, sorted(merged_ips))
@@ -432,30 +470,8 @@ def check_watcher(watcher, state, max_table_entries=0):
     now = time.time()
     ws['last_check'] = now
 
-    # Step 1: Primary source. primary_ips stays None if the source failed.
-    primary_desc = ''
-    primary_ips = None
-    if wtype == 'dns':
-        # Use hostnames (plural) first, fall back to hostname (legacy)
-        dns_hosts = split_csv(watcher.get('hostnames', '')) or split_csv(watcher.get('hostname', ''))
-        if dns_hosts:
-            primary_desc = ', '.join(dns_hosts)
-            af = watcher.get('addressFamily', 'ipv4')
-            dns_server = watcher.get('dnsServer', '').strip() or None
-            resolved = set()
-            for hostname in dns_hosts:
-                resolved.update(resolve_dns(hostname, af, dns_server=dns_server))
-            if resolved:
-                primary_ips = resolved
-    elif wtype == 'urltable':
-        url = watcher.get('url', '').strip()
-        if url:
-            primary_desc = url
-            # An empty feed is treated as a failure too: it is far more often a
-            # broken mirror or captive portal than a list that is really empty.
-            result = fetch_url(url)
-            if result:
-                primary_ips = set(result)
+    primary_desc = primary['desc']
+    primary_ips = primary['ips']
 
     # Step 2: Static entries
     static_entries = []
@@ -534,6 +550,7 @@ def check_watcher(watcher, state, max_table_entries=0):
         return False
 
     if new_ips == current_ips:
+        syslog.syslog(syslog.LOG_DEBUG, f'aliaserd: [{name}] no change ({len(new_ips)} entries)')
         return False
 
     # Update the table
@@ -582,6 +599,90 @@ def check_watcher(watcher, state, max_table_entries=0):
 
 # ---------- Daemon loop ----------
 
+def restore_tables(watchers):
+    """Refill empty pf tables from the last known state.
+
+    pf tables start empty after a reboot. Until the first lookup finishes
+    (a feed can take many seconds) an allow-list rule would lock people out
+    and a block-list rule would block nothing. Tables that already have
+    entries (e.g. a plain daemon restart) are left alone.
+    """
+    state = load_state()
+    for w in watchers:
+        ws = state.get(w['name'], {})
+        if ws.get('alias') != w['alias']:
+            continue  # target table changed since this state was written
+        saved = [e for e in (normalize_entry(x) for x in ws.get('current_ips', [])) if e]
+        if saved and pfctl_show(w['alias']) == [] and pfctl_replace(w['alias'], saved):
+            syslog.syslog(syslog.LOG_NOTICE,
+                          f'aliaserd: [{w["name"]}] restored {len(saved)} entries '
+                          f'into {w["alias"]} from saved state')
+
+
+class Scheduler:
+    """Runs each watcher on its own timer.
+
+    Lookups (DNS, URL fetch) run in a thread pool so one slow feed can't
+    delay the other watchers. Applying results - pf updates and state
+    writes - always happens on the thread calling tick().
+    """
+
+    def __init__(self, pool):
+        self.pool = pool
+        self.next_due = {}  # watcher name -> timestamp
+        self.pending = {}   # watcher name -> (watcher dict, future)
+
+    def tick(self, watchers, max_table_entries, now=None):
+        """Apply finished lookups, start due ones. Returns seconds to sleep."""
+        now = time.time() if now is None else now
+        by_name = {w['name']: w for w in watchers}
+
+        for name, (w, future) in list(self.pending.items()):
+            if not future.done():
+                continue
+            del self.pending[name]
+            if by_name.get(name) != w:
+                continue  # removed or edited meanwhile; rerun with the new config
+            changed = False
+            try:
+                with locked_state() as state:
+                    changed = apply_watcher(w, state, future.result(), max_table_entries)
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f'aliaserd: [{name}] unexpected error: {e}')
+            self.next_due[name] = now + w['interval']
+            if changed:
+                self._wake_dependents(w['alias'], watchers, now)
+
+        for w in watchers:
+            name = w['name']
+            if name not in self.pending and now >= self.next_due.get(name, 0):
+                self.pending[name] = (w, self.pool.submit(gather_primary, w))
+
+        for name in list(self.next_due):
+            if name not in by_name:
+                del self.next_due[name]
+
+        if self.pending:
+            return 0.5
+        upcoming = [self.next_due.get(name, now) for name in by_name] + [now + 10]
+        return max(0.5, min(upcoming) - now)
+
+    def _wake_dependents(self, alias, watchers, now):
+        # Watchers that include this table re-merge right away instead of
+        # waiting for their own interval.
+        for w in watchers:
+            if alias in split_csv(w['includeAliases']) and alias not in w.get('cyclicIncludes', []):
+                self.next_due[w['name']] = now
+
+
+def config_signature():
+    try:
+        st = os.stat(CONFIG_XML)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def run_daemon():
     """Main daemon loop. Reads config, runs watchers on their intervals."""
     syslog.openlog('aliaserd', syslog.LOG_PID, syslog.LOG_LOCAL4)
@@ -613,49 +714,32 @@ def run_daemon():
         # to SIGKILL.
         deadline = time.time() + seconds
         while running and time.time() < deadline:
-            time.sleep(0.5)
+            time.sleep(min(0.5, max(0, deadline - time.time())))
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    # Track per-watcher last-run times
-    last_run = {}
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    scheduler = Scheduler(pool)
+    config_sig = None
+    watchers, max_table_entries = [], 0
+    restored = False
 
     while running:
-        watchers, log_level, max_table_entries = read_config()
-        if not watchers:
-            wait(10)
-            continue
+        # The loop wakes every 0.5s while lookups are in flight; only
+        # re-parse config.xml when it actually changed.
+        sig = config_signature()
+        if sig != config_sig or sig is None:
+            config_sig = sig
+            watchers, log_level, max_table_entries = read_config()
+        if not restored:
+            restore_tables(watchers)
+            restored = True
+        wait(min(scheduler.tick(watchers, max_table_entries), 10))
 
-        now = time.time()
-        next_wake = now + 10  # Default wake in 10s if nothing scheduled
-
-        for w in watchers:
-            if not running:
-                break
-            name = w['name']
-            interval = w['interval']
-            last = last_run.get(name, 0)
-
-            if now - last >= interval:
-                try:
-                    with locked_state() as state:
-                        check_watcher(w, state, max_table_entries)
-                except Exception as e:
-                    syslog.syslog(syslog.LOG_ERR,
-                                  f'aliaserd: [{name}] unexpected error: {e}')
-                last_run[name] = now
-
-            # Calculate next wake time
-            next_for_watcher = last_run.get(name, now) + interval
-            if next_for_watcher < next_wake:
-                next_wake = next_for_watcher
-
-        # Sleep until next watcher needs to run
-        sleep_time = max(1, next_wake - time.time())
-        wait(min(sleep_time, 10))  # Cap at 10s for responsiveness
-
-    # Cleanup
+    # Cleanup. Worker threads may still be blocked in a lookup; don't wait
+    # for them (the caller exits the process with os._exit()).
+    pool.shutdown(wait=False, cancel_futures=True)
     syslog.syslog(syslog.LOG_NOTICE, 'aliaserd: stopping')
     try:
         os.unlink(PIDFILE)
@@ -676,7 +760,9 @@ def get_pid():
         with open(PIDFILE, 'r') as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)  # Check if process exists
-        result = subprocess.run(['ps', '-p', str(pid), '-o', 'command='],
+        # -ww: without a tty, ps truncates the command line (~80 columns),
+        # which can cut off the script name
+        result = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'command='],
                                 capture_output=True, text=True, timeout=5)
         if 'aliaserd' not in result.stdout:
             return None
@@ -698,11 +784,15 @@ def cmd_start():
     pid = os.fork()
     if pid > 0:
         os._exit(0)
-    # Redirect stdio
-    sys.stdin.close()
-    sys.stdout = open('/dev/null', 'w')
-    sys.stderr = open('/dev/null', 'w')
+    # Detach stdio at the fd level: replacing sys.stdout alone leaves fds 1/2
+    # pointing at the caller's pipe, and a caller capturing our output
+    # (configd, a test) would then wait forever for EOF.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    os.close(devnull)
     run_daemon()
+    os._exit(0)  # don't wait for lookup threads still blocked on the network
 
 
 def cmd_stop():
@@ -818,8 +908,9 @@ def cmd_refresh(uuid):
 
     for w in watchers:
         if w['uuid'] == uuid:
+            primary = gather_primary(w)  # network I/O outside the state lock
             with locked_state() as state:
-                changed = check_watcher(w, state, max_table_entries)
+                changed = apply_watcher(w, state, primary, max_table_entries)
             print(json.dumps({
                 'status': 'ok',
                 'watcher': w['name'],
