@@ -14,8 +14,10 @@
         <name>Services: Aliaser: Status</name>
         <patterns>
             <pattern>ui/aliaser/status*</pattern>
-            <pattern>api/aliaser/status/*</pattern>
-            <pattern>api/aliaser/service/*</pattern>
+            <!-- Read-only view plus "Refresh Now". Service control and
+                 createAlias (writes firewall config) need the Watchers privilege. -->
+            <pattern>api/aliaser/status/get</pattern>
+            <pattern>api/aliaser/status/refresh/*</pattern>
         </patterns>
     </page-services-aliaser-status>
     <page-services-aliaser-log>

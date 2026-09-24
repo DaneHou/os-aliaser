@@ -87,6 +87,12 @@
 </style>
 
 <script>
+    // Everything below comes from config, the daemon, or remote feeds/logs:
+    // escape it before building HTML strings.
+    function esc(s) {
+        return $('<div>').text(s == null ? '' : String(s)).html().replace(/"/g, '&quot;');
+    }
+
     function timeAgo(ts) {
         if (!ts || ts === 0) return 'Never';
         var now = Math.floor(Date.now() / 1000);
@@ -120,7 +126,7 @@
             var statusHtml = '';
             if (isRunning) {
                 daemonBar.attr('class', 'daemon-bar running');
-                statusHtml = '<span><span class="fa fa-check-circle text-success"></span> Daemon running (PID ' + data.daemon.pid + ')</span>';
+                statusHtml = '<span><span class="fa fa-check-circle text-success"></span> Daemon running (PID ' + esc(data.daemon.pid) + ')</span>';
             } else {
                 daemonBar.attr('class', 'daemon-bar stopped');
                 statusHtml = '<span><span class="fa fa-times-circle text-danger"></span> Daemon not running</span>';
@@ -154,23 +160,23 @@
                 html += '<div class="left">';
                 var icon = w.type === 'dns' ? 'fa-globe text-primary' : 'fa-link text-info';
                 html += '<span class="fa ' + icon + '"></span>';
-                html += '<span>' + name + '</span>';
-                html += '<span class="label label-' + (w.type === 'dns' ? 'primary' : 'info') + '">' + w.type.toUpperCase() + '</span>';
+                html += '<span>' + esc(name) + '</span>';
+                html += '<span class="label label-' + (w.type === 'dns' ? 'primary' : 'info') + '">' + esc(w.type.toUpperCase()) + '</span>';
                 if (hasError) {
-                    html += '<span class="label label-danger">' + w.consecutive_errors + ' errors</span>';
+                    html += '<span class="label label-danger">' + esc(w.consecutive_errors) + ' errors</span>';
                 }
                 // Health alerts
                 if (w.alerts) {
                     $.each(w.alerts, function(i, alert) {
                         if (alert.type === 'empty') {
-                            html += '<span class="alert-badge-empty"><span class="fa fa-exclamation-circle"></span> ' + alert.message + '</span>';
+                            html += '<span class="alert-badge-empty"><span class="fa fa-exclamation-circle"></span> ' + esc(alert.message) + '</span>';
                         } else if (alert.type === 'threshold') {
-                            html += '<span class="alert-badge-threshold"><span class="fa fa-warning"></span> ' + alert.message + '</span>';
+                            html += '<span class="alert-badge-threshold"><span class="fa fa-warning"></span> ' + esc(alert.message) + '</span>';
                         }
                     });
                 }
                 html += '</div>';
-                html += '<button class="btn btn-xs btn-default btn-refresh" data-uuid="' + w.uuid + '">' +
+                html += '<button class="btn btn-xs btn-default btn-refresh" data-uuid="' + esc(w.uuid) + '">' +
                     '<span class="fa fa-refresh"></span> Refresh Now</button>';
                 html += '</div>';
 
@@ -178,16 +184,16 @@
                 if (w.sources && w.sources.length > 0) {
                     html += '<div class="sources-list">';
                     $.each(w.sources, function(i, src) {
-                        html += '<span><span class="fa fa-fw fa-angle-right"></span> ' + src + '</span>';
+                        html += '<span><span class="fa fa-fw fa-angle-right"></span> ' + esc(src) + '</span>';
                     });
                     html += '</div>';
                 }
 
                 // Metrics
                 html += '<div class="metrics-row">';
-                html += '<div class="metric"><span class="label-text">Alias:</span> <span class="value">' + w.alias + '</span></div>';
-                html += '<div class="metric"><span class="label-text">IPs in table:</span> <span class="value">' + w.ip_count + '</span></div>';
-                html += '<div class="metric"><span class="label-text">Interval:</span> <span class="value">' + w.interval + 's</span></div>';
+                html += '<div class="metric"><span class="label-text">Alias:</span> <span class="value">' + esc(w.alias) + '</span></div>';
+                html += '<div class="metric"><span class="label-text">IPs in table:</span> <span class="value">' + esc(w.ip_count) + '</span></div>';
+                html += '<div class="metric"><span class="label-text">Interval:</span> <span class="value">' + esc(w.interval) + 's</span></div>';
                 html += '<div class="metric"><span class="label-text">Last checked:</span> <span class="value" title="' + formatTime(w.last_check) + '">' + timeAgo(w.last_check) + '</span></div>';
                 html += '<div class="metric"><span class="label-text">Last changed:</span> <span class="value" title="' + formatTime(w.last_change) + '">' + timeAgo(w.last_change) + '</span></div>';
                 html += '</div>';
@@ -195,14 +201,14 @@
                 // Error message
                 if (hasError && w.last_error) {
                     html += '<div class="text-danger" style="margin-bottom:8px;font-size:12px;">' +
-                        '<span class="fa fa-exclamation-triangle"></span> ' + w.last_error + '</div>';
+                        '<span class="fa fa-exclamation-triangle"></span> ' + esc(w.last_error) + '</div>';
                 }
 
                 // IP table
                 if (w.current_ips && w.current_ips.length > 0) {
                     html += '<div class="ip-table"><table class="table table-condensed">';
                     $.each(w.current_ips, function(i, ip) {
-                        html += '<tr><td style="width:30px;color:#999;">' + (i+1) + '</td><td>' + ip + '</td></tr>';
+                        html += '<tr><td style="width:30px;color:#999;">' + (i+1) + '</td><td>' + esc(ip) + '</td></tr>';
                     });
                     html += '</table></div>';
                 } else {
@@ -219,16 +225,16 @@
                     $.each(hist, function(i, h) {
                         html += '<div class="history-entry">';
                         html += '<span class="text-muted">' + formatTime(h.timestamp) + '</span> ';
-                        html += h.old_count + ' &rarr; ' + h.new_count + ' entries';
+                        html += esc(h.old_count) + ' &rarr; ' + esc(h.new_count) + ' entries';
                         if (h.added && h.added.length > 0) {
                             html += ' <span class="added">+' + h.added.length + ' added</span>';
-                            html += ' <small class="text-muted">(' + h.added.slice(0, 5).join(', ');
+                            html += ' <small class="text-muted">(' + esc(h.added.slice(0, 5).join(', '));
                             if (h.added.length > 5) html += '...';
                             html += ')</small>';
                         }
                         if (h.removed && h.removed.length > 0) {
                             html += ' <span class="removed">-' + h.removed.length + ' removed</span>';
-                            html += ' <small class="text-muted">(' + h.removed.slice(0, 5).join(', ');
+                            html += ' <small class="text-muted">(' + esc(h.removed.slice(0, 5).join(', '));
                             if (h.removed.length > 5) html += '...';
                             html += ')</small>';
                         }
@@ -266,7 +272,7 @@
             var uuid = $(this).data('uuid');
             var btn = $(this);
             btn.prop('disabled', true).find('.fa').addClass('fa-spin');
-            $.post('/api/aliaser/status/refresh/' + uuid, function() {
+            $.post('/api/aliaser/status/refresh/' + encodeURIComponent(uuid), function() {
                 setTimeout(function() {
                     loadStatus();
                     btn.prop('disabled', false).find('.fa').removeClass('fa-spin');

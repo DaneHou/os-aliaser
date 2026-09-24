@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Change history no longer disappears.** The daemon and "Refresh Now" each kept
+  their own copy of the state and overwrote each other's history. All state
+  writes now go through a lock and are atomic. State moved from `/var/run/aliaser`
+  (wiped at boot) to `/var/db/aliaser`; existing history is migrated.
+- A DNS or feed failure (including an empty feed) no longer shrinks the table;
+  the source's last good result is kept for up to 24 hours.
+- Include loops (A includes B, B includes A) no longer make IPs impossible to remove.
+- One watcher with a bad interval no longer disables all watchers.
+- Feed failures now show an error message on the status page.
+- `stop` shuts the daemon down gracefully instead of always escalating to SIGKILL,
+  never signals an unrelated process that reused a stale PID, and two racing
+  `start` calls can no longer leave two daemons running.
+
+### Security
+
+- Feed and static entries are validated as IPs/CIDRs and written to `pfctl`
+  via a file, so a malicious feed can no longer inject `pfctl` options.
+- Feeds larger than 16 MB are rejected.
+- "Refresh Now" validates the UUID and passes it to configd escaped.
+- Stored XSS fixed on the status, watchers and log pages; the log page only
+  shows lines from the `aliaserd` process.
+- Watchers can no longer target OPNsense's built-in tables (`bogons`, `sshlockout`, `__*`, ...).
+- The Status privilege no longer grants service control or alias creation.
+
 ## [1.1.0] - 2026-03-05
 
 ### Composite Watchers

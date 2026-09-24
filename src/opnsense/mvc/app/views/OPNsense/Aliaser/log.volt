@@ -4,16 +4,27 @@
 #}
 
 <script>
+    // Everything below comes from config, the daemon, or remote feeds/logs:
+    // escape it before building HTML strings.
+    function esc(s) {
+        return $('<div>').text(s == null ? '' : String(s)).html().replace(/"/g, '&quot;');
+    }
+
     $(document).ready(function() {
         ajaxGet('/api/diagnostics/log/core/syslog', { 'severity': '', 'limit': 500, 'module': 'core', 'filename': 'system', 'filter': 'aliaserd' }, function(data) {
             var tbody = $('#aliaser-log-table tbody');
             tbody.empty();
             if (data && data.rows) {
                 $.each(data.rows, function(idx, row) {
+                    // The API filter is a plain text match, so it also returns lines
+                    // from other processes that merely mention "aliaserd".
+                    if (row.process_name !== 'aliaserd') {
+                        return;
+                    }
                     tbody.append(
-                        '<tr><td>' + row.timestamp + '</td>' +
-                        '<td>' + row.process_name + '</td>' +
-                        '<td>' + row.line + '</td></tr>'
+                        '<tr><td>' + esc(row.timestamp) + '</td>' +
+                        '<td>' + esc(row.process_name) + '</td>' +
+                        '<td>' + esc(row.line) + '</td></tr>'
                     );
                 });
             }

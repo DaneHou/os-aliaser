@@ -21,6 +21,12 @@
 </style>
 
 <script>
+    // Everything below comes from config, the daemon, or remote feeds/logs:
+    // escape it before building HTML strings.
+    function esc(s) {
+        return $('<div>').text(s == null ? '' : String(s)).html().replace(/"/g, '&quot;');
+    }
+
     $( document ).ready(function() {
         // Load general settings
         mapDataToFormUI({'frm_GeneralSettings': "/api/aliaser/settings/get"}).done(function(){
@@ -52,9 +58,9 @@
                     },
                     "watcherTarget": function(column, row) {
                         if (row.type === 'dns') {
-                            return '<span class="fa fa-fw fa-globe text-primary"></span> ' + (row.hostnames || row.hostname || '-');
+                            return '<span class="fa fa-fw fa-globe text-primary"></span> ' + esc(row.hostnames || row.hostname || '-');
                         } else {
-                            return '<span class="fa fa-fw fa-link text-info"></span> ' + (row.url || '-');
+                            return '<span class="fa fa-fw fa-link text-info"></span> ' + esc(row.url || '-');
                         }
                     },
                     "typeBadge": function(column, row) {
@@ -63,6 +69,9 @@
                         } else {
                             return '<span class="label label-info">URL</span>';
                         }
+                    },
+                    "text": function(column, row) {
+                        return esc(row[column.id]);
                     },
                     "intervalFmt": function(column, row) {
                         var s = parseInt(row.interval);
@@ -133,9 +142,9 @@
 
                         var btn = $('<button type="button" class="btn btn-xs ' + btnClass + '"></button>');
                         btn.text(a.name);
-                        btn.append(' <span class="badge">' + typeLabel + '</span>');
+                        btn.append(' <span class="badge">' + esc(typeLabel) + '</span>');
                         if (a.entry_count > 0) {
-                            btn.append(' <span class="badge">' + a.entry_count + ' IPs</span>');
+                            btn.append(' <span class="badge">' + esc(a.entry_count) + ' IPs</span>');
                         }
                         if (a.type !== 'external') {
                             btn.attr('title', 'Warning: non-External aliases are also managed by OPNsense. Use External type to avoid conflicts.');
@@ -220,12 +229,12 @@
             <tr>
                 <th data-column-id="uuid" data-type="string" data-identifier="true" data-visible="false">ID</th>
                 <th data-column-id="enabled" data-width="5em" data-type="string" data-formatter="status">{{ lang._('On') }}</th>
-                <th data-column-id="name" data-type="string" data-width="10em">{{ lang._('Name') }}</th>
+                <th data-column-id="name" data-type="string" data-width="10em" data-formatter="text">{{ lang._('Name') }}</th>
                 <th data-column-id="type" data-width="5em" data-type="string" data-formatter="typeBadge">{{ lang._('Type') }}</th>
                 <th data-column-id="hostname" data-type="string" data-formatter="watcherTarget">{{ lang._('Target') }}</th>
-                <th data-column-id="alias" data-type="string" data-width="12em">{{ lang._('Alias') }}</th>
+                <th data-column-id="alias" data-type="string" data-width="12em" data-formatter="text">{{ lang._('Alias') }}</th>
                 <th data-column-id="interval" data-width="6em" data-type="string" data-formatter="intervalFmt">{{ lang._('Interval') }}</th>
-                <th data-column-id="description" data-type="string">{{ lang._('Description') }}</th>
+                <th data-column-id="description" data-type="string" data-formatter="text">{{ lang._('Description') }}</th>
                 <th data-column-id="commands" data-width="7em" data-formatter="commands"
                     data-sortable="false">{{ lang._('Commands') }}</th>
             </tr>

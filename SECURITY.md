@@ -66,24 +66,47 @@ This is required because `pfctl` table operations need root privileges.
 - Multi-hostnames are restricted to `[a-zA-Z0-9\-.,\s]{0,512}` (comma-separated FQDNs).
 - Static entries are restricted to `[0-9a-fA-F:./,\s]{0,1024}` (IPs and CIDRs only).
 - Include alias names are restricted to `[a-zA-Z0-9_,\s]{0,256}` (valid pf table names).
-- Self-referencing in include aliases is skipped to prevent loops.
-- URLs are validated to start with `http://` or `https://`.
-- Alias names are validated to `[a-zA-Z0-9_]{1,31}` (pf table name limits).
+- Include loops (self-reference, or A includes B includes A) are detected and
+  the looping include is skipped.
+- URLs must start with `http://` or `https://` and may not contain whitespace,
+  quotes, `<`, `>` or backslashes.
+- Alias names are validated to `[a-zA-Z0-9_]{1,31}` (pf table name limits), and
+  OPNsense's own tables (`bogons`, `bogonsv6`, `virusprot`, `sshlockout`,
+  `webConfiguratorlockout`, `__*`) are refused as targets.
 - All user input passes through OPNsense MVC field validators before reaching
-  the daemon.
+  the daemon. The daemon re-validates table names, static entries and include
+  names itself, since `config.xml` can also be edited directly or arrive via HA sync.
+- Every entry from a URL feed or the static list is parsed with Python's
+  `ipaddress` module; anything that is not a valid IP/CIDR is dropped and logged.
+  Feeds larger than 16 MB are rejected.
+- The "Refresh Now" API accepts only a well-formed UUID and passes it to configd
+  as an escaped parameter.
+- The web UI HTML-escapes every value it renders (watcher fields, daemon status,
+  error messages, log lines).
 
 ### pf Table Operations
 
 - The daemon only uses `pfctl -t <name> -T show` (read) and
-  `pfctl -t <name> -T replace` (atomic write).
+  `pfctl -t <name> -T replace -f <tempfile>` (atomic write). Addresses are
+  passed in a file, never on the command line, so a feed entry can't be
+  interpreted as a `pfctl` option.
 - Table names are taken from validated config, not user input at runtime.
 - The daemon never calls `filter reload` or modifies firewall rules.
 
 ## Known Security Considerations
 
-- **URL feeds are trusted input.** If a threat feed URL is compromised, the
-  attacker can inject arbitrary IPs into your firewall aliases. Only use feeds
-  from sources you trust.
+- **URL feeds are trusted for their content.** Entries are validated as IPs,
+  but a compromised feed can still put arbitrary *valid* IPs into your aliases.
+  Only use feeds from sources you trust.
+- **Failed sources keep their last good result for 24 hours.** If DNS or a feed
+  fails, the table is not shrunk (that would unblock a block-list or lock users
+  out of an allow-list). After 24 hours of failures the stale entries are dropped.
+
+### Access Control
+
+- *Services: Aliaser: Status* allows viewing status and "Refresh Now" only.
+- Starting/stopping the service, editing watchers and creating firewall aliases
+  require *Services: Aliaser: Watchers*.
 - **DNS spoofing** could inject incorrect IPs into aliases. Use DNSSEC or a
   trusted recursive resolver to mitigate this.
 - **Config backups contain watcher definitions.** While no credentials are

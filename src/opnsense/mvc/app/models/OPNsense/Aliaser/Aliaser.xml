@@ -86,15 +86,16 @@
                 <!-- URL watcher: URL to fetch IP list from -->
                 <url type="TextField">
                     <Required>N</Required>
-                    <Mask>/^https?:\/\/.{1,512}$/</Mask>
+                    <Mask>/^https?:\/\/[^\s&lt;>"'\\]{1,512}$/</Mask>
                     <ValidationMessage>Enter a valid HTTP or HTTPS URL</ValidationMessage>
                 </url>
 
                 <!-- Target pf table / alias name -->
                 <alias type="TextField">
                     <Required>Y</Required>
-                    <Mask>/^[a-zA-Z0-9_]{1,31}$/</Mask>
-                    <ValidationMessage>Alias name must be 1-31 alphanumeric characters or underscores (must match an existing OPNsense alias)</ValidationMessage>
+                    <!-- Built-in OPNsense tables (bogons, sshlockout, __lan_network, ...) are refused -->
+                    <Mask>/^(?!(bogons|bogonsv6|virusprot|sshlockout|webConfiguratorlockout)$)(?!__)[a-zA-Z0-9_]{1,31}$/</Mask>
+                    <ValidationMessage>Alias name must be 1-31 alphanumeric characters or underscores, must match an existing OPNsense alias, and cannot be a built-in table (bogons, sshlockout, virusprot, __*)</ValidationMessage>
                 </alias>
 
                 <!-- Check interval in seconds -->
