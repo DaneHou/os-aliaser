@@ -67,7 +67,8 @@ src/
 **Key design decisions:**
 - Single-threaded Python daemon with per-watcher timers (no cron, no threads)
 - Zero external Python dependencies (stdlib only: socket, urllib, xml.etree, subprocess)
-- Atomic pf table updates only (`pfctl -T replace`), never filter reloads
+- Atomic pf table updates only (`pfctl -T replace -f <file>`), never filter reloads; addresses never go on the command line
+- Every IP from a feed or static list goes through `normalize_entry()` (ipaddress); a failed source keeps its last good result for 24h instead of shrinking the table
 - Change history tracked per watcher (last 20 changes in state.json)
 - Composite watchers merge DNS + static entries + other alias tables in one update
 
