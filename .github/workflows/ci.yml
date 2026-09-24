@@ -12,8 +12,8 @@ jobs:
         # 3.9 is the minimum supported; 3.11 is what current OPNsense ships
         python-version: ['3.9', '3.11']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
@@ -22,10 +22,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: PHP syntax
         run: find src -name '*.php' -o -name '*.inc' | xargs -n1 php -l
       - name: XML well-formedness
-        run: |
-          sudo apt-get install -y -qq libxml2-utils
-          find src -name '*.xml' | xargs xmllint --noout
+        # stdlib parser: no apt install needed on the runner
+        run: find src -name '*.xml' -exec python3 -c 'import sys, xml.etree.ElementTree as ET; [ET.parse(f) for f in sys.argv[1:]]' {} +
