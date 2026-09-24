@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  daemon-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.9 is the minimum supported; 3.11 is what current OPNsense ships
+        python-version: ['3.9', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python -m pytest -q tests
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax
+        run: find src -name '*.php' -o -name '*.inc' | xargs -n1 php -l
+      - name: XML well-formedness
+        run: |
+          sudo apt-get install -y -qq libxml2-utils
+          find src -name '*.xml' | xargs xmllint --noout

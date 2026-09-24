@@ -31,7 +31,13 @@ State (incl. change history) is persisted at `/var/db/aliaser/state.json`; all w
 
 ## Testing
 
-No automated tests. Manual verification on an OPNsense VM — see CONTRIBUTING.md for the full checklist. Key checks: daemon starts, status page shows resolved IPs, refresh button works, composite sources merge, start/stop/restart buttons work, clean uninstall.
+```sh
+pip install pytest && python3 -m pytest -q tests    # daemon tests, no OPNsense needed
+```
+
+`tests/` runs the real `aliaserd.py` against a fake `pfctl` (`tests/fake_pfctl.py`, tables are files) and fake DNS answers (`tests/harness.py`). CI (`.github/workflows/ci.yml`) runs it on Python 3.9 and 3.11, plus `php -l` and `xmllint`. Add a test for any daemon behaviour change.
+
+UI, configd and real pf still need manual verification on an OPNsense VM — see CONTRIBUTING.md for the checklist. Key checks: daemon starts, status page shows resolved IPs, refresh button works, composite sources merge, start/stop/restart buttons work, clean uninstall.
 
 ## Architecture
 
@@ -65,7 +71,7 @@ src/
 **Data flow:** OPNsense config XML -> aliaserd.py reads watchers -> resolves DNS/URLs + merges static IPs + includes other pf tables -> atomic `pfctl -T replace` -> persists state to JSON -> Web UI queries status via API controllers -> configd actions bridge UI to daemon.
 
 **Key design decisions:**
-- Single-threaded Python daemon with per-watcher timers (no cron, no threads)
+- Per-watcher timers (no cron). Lookups run in a small thread pool (`Scheduler`); pf updates and state writes happen only on the main thread
 - Zero external Python dependencies (stdlib only: socket, urllib, xml.etree, subprocess)
 - Atomic pf table updates only (`pfctl -T replace -f <file>`), never filter reloads; addresses never go on the command line
 - Every IP from a feed or static list goes through `normalize_entry()` (ipaddress); a failed source keeps its last good result for 24h instead of shrinking the table
