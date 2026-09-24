@@ -23,6 +23,7 @@ After install, hard-refresh browser (Ctrl+Shift+R) to pick up menu changes.
 ```sh
 configctl aliaser status                                              # Daemon status via configd
 /usr/local/opnsense/scripts/OPNsense/Aliaser/aliaserd.py status      # Direct daemon status
+/usr/local/opnsense/scripts/OPNsense/Aliaser/aliaserd.py health      # Health check (exit 1 + reasons), used by Monit
 clog /var/log/system/latest.log | grep aliaserd                       # Syslog entries
 pfctl -t <AliasName> -T show                                          # Inspect a pf table
 ```
@@ -45,7 +46,7 @@ UI, configd and real pf still need manual verification on an OPNsense VM — see
 src/
 ├── etc/inc/plugins.inc.d/aliaser.inc          # Plugin hooks (boot, services, syslog, HA sync)
 ├── opnsense/scripts/OPNsense/Aliaser/
-│   └── aliaserd.py                            # Python daemon (~600 lines, stdlib only)
+│   └── aliaserd.py                            # Python daemon (stdlib only)
 ├── opnsense/mvc/app/
 │   ├── controllers/OPNsense/Aliaser/
 │   │   ├── IndexController.php                # Watcher config page
@@ -66,6 +67,8 @@ src/
 │       └── log.volt                           # Log viewer UI
 └── opnsense/service/conf/actions.d/
     └── actions_aliaser.conf                   # configd action definitions
+tests/                                         # pytest: fake_pfctl.py, harness.py, test_*.py
+.github/workflows/ci.yml                       # CI
 ```
 
 **Data flow:** OPNsense config XML -> aliaserd.py reads watchers -> resolves DNS/URLs + merges static IPs + includes other pf tables -> atomic `pfctl -T replace` -> persists state to JSON -> Web UI queries status via API controllers -> configd actions bridge UI to daemon.

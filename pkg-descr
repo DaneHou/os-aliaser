@@ -5,13 +5,16 @@ IPs into pf tables via pfctl -T replace. No filter reload, no dropped
 connections.
 
 Features:
-- DNS watchers with configurable intervals (10s-3600s)
+- DNS watchers with configurable intervals (10s-3600s), optional direct
+  queries to a chosen DNS server with TTL-aware re-checks
 - URL feed watchers for threat feeds and cloud provider IP ranges
+- Composite watchers: DNS + static IPs/CIDRs + other alias tables
 - Atomic pf table updates without filter reload
-- Change detection with before/after logging
-- Failure alerting with consecutive error tracking
+- Fail-closed: a failed source keeps its last good result (up to 24h)
+- Tables refilled from saved state right after a reboot
+- Change history, empty-table and size-threshold alerts
+- Health check for Monit alerting
 - Live status dashboard with per-watcher diagnostics
-- Manual "Refresh Now" button for debugging
 - IPv4 + IPv6 dual-stack support
 
 WWW: https://github.com/DaneHou/os-aliaser

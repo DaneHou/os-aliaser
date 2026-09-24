@@ -197,9 +197,11 @@ src/
     │   ├── models/OPNsense/Aliaser/       # Data model, menu, ACL
     │   └── views/OPNsense/Aliaser/        # Volt templates (3 pages)
     ├── scripts/OPNsense/Aliaser/
-    │   └── aliaserd.py                    # Daemon (~600 lines Python)
+    │   └── aliaserd.py                    # Daemon (Python, stdlib only)
     └── service/conf/actions.d/
         └── actions_aliaser.conf           # configd action definitions
+tests/                                     # pytest suite (fake pfctl, no OPNsense needed)
+.github/workflows/ci.yml                   # CI: tests on Python 3.9/3.11, PHP + XML lint
 ```
 
 ## Requirements
@@ -211,7 +213,7 @@ src/
 ## Documentation
 
 - [Changelog](CHANGELOG.md) — version history
-- [Contributing](CONTRIBUTING.md) — development setup and code style
+- [Contributing](CONTRIBUTING.md) — development setup, code style and tests
 - [Security](SECURITY.md) — vulnerability reporting and security design
 
 ## Known Limitations

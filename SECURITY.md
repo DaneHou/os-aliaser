@@ -4,8 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | Yes                |
-| < 1.0   | No                 |
+| 1.2.x   | Yes                |
+| < 1.2   | No                 |
 
 Only the latest release receives security fixes. Upgrade to the latest version
 by running `git pull && make install` on your OPNsense system.
@@ -53,8 +53,12 @@ This is required because `pfctl` table operations need root privileges.
 
 ### Network Security
 
-- DNS resolution uses the system resolver. Ensure your OPNsense DNS settings
-  (Unbound / system nameservers) are trusted.
+- DNS resolution uses the system resolver by default. Ensure your OPNsense DNS
+  settings (Unbound / system nameservers) are trusted.
+- Watchers with a custom DNS server use the daemon's built-in stub resolver
+  (plain UDP, no DNSSEC validation). It only accepts replies from the queried
+  server (connected socket) that carry the random query ID and echo the exact
+  question; everything else is discarded.
 - URL feed fetching uses HTTPS when the feed URL uses HTTPS. The daemon
   respects system CA certificates.
 - The daemon does not listen on any network ports.

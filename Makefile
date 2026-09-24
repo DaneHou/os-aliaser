@@ -1,5 +1,5 @@
 PLUGIN_NAME=	os-aliaser
-PLUGIN_VERSION=	1.0.0
+PLUGIN_VERSION=	1.2.0
 
 PREFIX?=	/usr/local
 DESTDIR?=
