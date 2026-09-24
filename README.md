@@ -59,9 +59,13 @@ Aliaser Daemon (Python)
 ## Features
 
 - **DNS watchers** — track FQDN changes with configurable intervals (10s–3600s)
+- **Direct DNS queries** — optionally query a specific DNS server per watcher, bypassing the local cache; re-checks as soon as the record's TTL expires
 - **URL feed watchers** — sync IP lists from URLs (threat feeds, cloud provider ranges)
 - **Composite watchers** — merge multiple DNS hostnames, static IPs/CIDRs, and existing alias tables into a single target
 - **Atomic updates** — `pfctl -T replace` only, never triggers filter reload
+- **Survives reboots** — tables are refilled from the last known state as soon as the daemon starts, before the first lookup finishes
+- **Fail-closed** — if DNS or a feed fails, the last good result is kept (up to 24h) instead of shrinking the table
+- **Parallel lookups** — a slow feed never delays other watchers; nested aliases re-merge the moment an included table changes
 - **Change detection** — only updates pf tables when content actually changes
 - **Health monitoring** — empty table alerts, configurable size threshold warnings
 - **Change history** — per-watcher diff log (last 20 changes with added/removed IPs)
@@ -133,6 +137,32 @@ Block known-bad IPs from a threat intelligence feed:
 - Watcher: URL → `https://example.com/blocklist.txt` → `Blocklist` alias (interval: 30m)
 - Firewall rule: block traffic from `Blocklist`
 
+## Alerting (Monit)
+
+The status page only helps if someone looks at it. To get an email when a
+watcher keeps failing, a table goes empty, or the daemon dies, let OPNsense's
+built-in Monit run the health check:
+
+```sh
+/usr/local/opnsense/scripts/OPNsense/Aliaser/aliaserd.py health
+# OK: 3 watcher(s) healthy                                   (exit 0)
+# office: 3 failures in a row: no results from office.example.com   (exit 1)
+```
+
+It reports: daemon not running, a source failing 3+ times in a row, empty-table
+and size-threshold alerts, and watchers not checked for 3× their interval.
+
+1. **Services > Monit > Settings > General / Alert Settings** — enable Monit,
+   set up your mail server and an alert recipient (skip if already done).
+2. **Service Tests Settings** — add a test: *Name* `AliaserHealth`,
+   *Type* `Program Status`, *Condition* `status != 0`, *Action* `Alert`.
+3. **Service Settings** — add a service: *Name* `aliaser`, *Type* `Custom`,
+   *Path* `/usr/local/opnsense/scripts/OPNsense/Aliaser/aliaserd.py health`,
+   *Tests* `AliaserHealth`. Save and apply.
+
+The alert email contains the command's output, i.e. which watcher failed and why.
+(Menu and field names are from OPNsense 24.7/26.1 and may differ slightly between versions.)
+
 ## Updating
 
 ```sh
@@ -167,9 +197,11 @@ src/
     │   ├── models/OPNsense/Aliaser/       # Data model, menu, ACL
     │   └── views/OPNsense/Aliaser/        # Volt templates (3 pages)
     ├── scripts/OPNsense/Aliaser/
-    │   └── aliaserd.py                    # Daemon (~600 lines Python)
+    │   └── aliaserd.py                    # Daemon (Python, stdlib only)
     └── service/conf/actions.d/
         └── actions_aliaser.conf           # configd action definitions
+tests/                                     # pytest suite (fake pfctl, no OPNsense needed)
+.github/workflows/ci.yml                   # CI: tests on Python 3.9/3.11, PHP + XML lint
 ```
 
 ## Requirements
@@ -181,7 +213,7 @@ src/
 ## Documentation
 
 - [Changelog](CHANGELOG.md) — version history
-- [Contributing](CONTRIBUTING.md) — development setup and code style
+- [Contributing](CONTRIBUTING.md) — development setup, code style and tests
 - [Security](SECURITY.md) — vulnerability reporting and security design
 
 ## Known Limitations

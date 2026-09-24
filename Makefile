@@ -1,5 +1,5 @@
 PLUGIN_NAME=	os-aliaser
-PLUGIN_VERSION=	1.0.0
+PLUGIN_VERSION=	1.2.0
 
 PREFIX?=	/usr/local
 DESTDIR?=
@@ -77,7 +77,7 @@ install-plugin:
 	@cp src/opnsense/service/conf/actions.d/actions_aliaser.conf $(ACTIONS_DIR)/
 
 	# Runtime directories
-	@mkdir -p /var/run/aliaser
+	@mkdir -p /var/db/aliaser
 	@mkdir -p /var/log/aliaser
 	@echo ">>> Plugin files installed."
 
@@ -94,6 +94,11 @@ activate:
 	@service configd restart 2>/dev/null || true
 	# Restart web GUI
 	@configctl webgui restart 2>/dev/null || service php_fpm restart 2>/dev/null || true
+	# Restart the daemon if it was running, so upgrades take effect
+	@if [ -f /var/run/aliaser.pid ]; then \
+		echo ">>> Restarting aliaser daemon..."; \
+		$(SCRIPTS_DIR)/aliaserd.py restart; \
+	fi
 	@echo ""
 	@echo ">>> Plugin activated."
 	@echo ">>> Hard-refresh your browser (Ctrl+Shift+R) to see the menu."
@@ -110,7 +115,7 @@ uninstall:
 	@rm -f $(PLUGINS_DIR)/aliaser.inc
 	@rm -f $(DESTDIR)/etc/newsyslog.conf.d/aliaser.conf
 	@rm -f /var/run/aliaser.pid
-	@rm -rf /var/run/aliaser
+	@rm -rf /var/run/aliaser /var/db/aliaser
 	@rm -f /var/lib/php/tmp/opnsense_menu_cache.xml 2>/dev/null || true
 	@rm -f /tmp/opnsense_menu_cache.xml 2>/dev/null || true
 	@service configd restart 2>/dev/null || true

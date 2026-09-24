@@ -46,9 +46,12 @@ class StatusController extends ApiControllerBase
     {
         $result = ['status' => 'failed'];
 
-        if ($this->request->isPost() && !empty($uuid)) {
+        // $uuid comes straight from the URL and ends up in a root shell via
+        // configd: accept only a real UUID and let configdpRun() escape it.
+        $uuidPattern = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
+        if ($this->request->isPost() && is_string($uuid) && preg_match($uuidPattern, $uuid)) {
             $backend = new \OPNsense\Core\Backend();
-            $response = trim($backend->configdpRun("aliaser refresh {$uuid}"));
+            $response = trim($backend->configdpRun('aliaser refresh', [$uuid]));
             $result = ['status' => 'ok', 'response' => $response];
         }
 

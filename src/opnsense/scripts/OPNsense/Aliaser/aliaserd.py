@@ -11,6 +11,7 @@ Usage:
     aliaserd.py stop        Stop the running daemon
     aliaserd.py restart     Restart the daemon
     aliaserd.py status      Print JSON status of all watchers
+    aliaserd.py health      Exit 1 and list problems if unhealthy (for Monit)
     aliaserd.py reconfigure Reload config and restart daemon
     aliaserd.py refresh UUID Force immediate refresh of a watcher
 
@@ -21,25 +22,110 @@ Architecture:
     - DNS resolution uses socket.getaddrinfo (supports A + AAAA)
     - URL fetching uses urllib (with timeout)
     - Table updates via: pfctl -t <alias> -T replace <ips...>
-    - State cached in /var/run/aliaser/state.json
+    - State persisted in /var/db/aliaser/state.json (survives reboot)
     - Logs to syslog facility 'aliaser'
 """
 
+import concurrent.futures
+import fcntl
+import ipaddress
 import json
 import os
+import re
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import syslog
+import tempfile
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
 PIDFILE = '/var/run/aliaser.pid'
-STATEFILE = '/var/run/aliaser/state.json'
+STATEFILE = '/var/db/aliaser/state.json'
+# Old location, read once for migration. /var/run is wiped at boot, so history kept there was lost.
+LEGACY_STATEFILE = '/var/run/aliaser/state.json'
+LOCKFILE = '/var/db/aliaser/state.lock'
 CONFIG_XML = '/conf/config.xml'
 PFCTL = '/sbin/pfctl'
+
+MIN_INTERVAL = 10
+# With a TTL from a direct DNS query, re-check when it expires, but not more
+# often than this (a TTL of 0 would otherwise mean a busy loop).
+MIN_TTL_WAIT = 5
+DNS_PORT = 53
+# `health` reports a watcher once its source has failed this many times in a row
+HEALTH_ERROR_THRESHOLD = 3
+MAX_FEED_BYTES = 16 * 1024 * 1024
+# When a DNS/URL source fails, keep serving its last good answer for this
+# long instead of shrinking the table (an allow-list would lock people out,
+# a block-list would silently stop blocking). After that, drop it.
+STALE_PRIMARY_MAX_AGE = 24 * 3600
+
+TABLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_]{1,31}$')
+UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')
+# pf tables OPNsense itself maintains; a watcher must never overwrite them.
+# Interface network tables (__lan_network etc.) are covered by the '__' prefix.
+# general.logLevel -> syslog mask. "warn" keeps NOTICE so table changes
+# still show up in the log by default.
+LOG_LEVELS = {
+    'error': syslog.LOG_UPTO(syslog.LOG_ERR),
+    'warn': syslog.LOG_UPTO(syslog.LOG_NOTICE),
+    'info': syslog.LOG_UPTO(syslog.LOG_INFO),
+    'debug': syslog.LOG_UPTO(syslog.LOG_DEBUG),
+}
+
+RESERVED_TABLES = {'bogons', 'bogonsv6', 'virusprot', 'sshlockout', 'webConfiguratorlockout'}
+
+
+def split_csv(value):
+    return [x.strip() for x in (value or '').split(',') if x.strip()]
+
+
+def is_valid_target_table(name):
+    return (bool(TABLE_NAME_RE.match(name or ''))
+            and name not in RESERVED_TABLES
+            and not name.startswith('__'))
+
+
+def normalize_entry(entry):
+    """Return a canonical IP/CIDR string, or None if entry is not one.
+
+    Single hosts are returned without a prefix length, because that is how
+    `pfctl -T show` prints them; otherwise every check would see a diff.
+    """
+    try:
+        net = ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        return None
+    if net.prefixlen == net.max_prefixlen:
+        return str(net.network_address)
+    return str(net)
+
+
+def mark_include_cycles(watchers):
+    """Record, per watcher, the includes that lead back to its own table.
+
+    If A includes B and B includes A, each re-adds the other's addresses, so
+    an IP could never be removed from either table. Those includes are skipped.
+    """
+    graph = {w['alias']: split_csv(w['includeAliases']) for w in watchers}
+
+    def reaches(start, target):
+        seen, stack = set(), [start]
+        while stack:
+            node = stack.pop()
+            if node == target:
+                return True
+            if node not in seen:
+                seen.add(node)
+                stack.extend(graph.get(node, []))
+        return False
+
+    for w in watchers:
+        w['cyclicIncludes'] = [inc for inc in graph[w['alias']] if reaches(inc, w['alias'])]
 
 # ---------- Config parsing ----------
 
@@ -56,6 +142,7 @@ def read_config():
         general = aliaser.find('general')
         log_level = 'warn'
         max_table_entries = 0
+        default_interval = 30
         if general is not None:
             enabled = general.findtext('enabled', '0')
             if enabled != '1':
@@ -65,6 +152,11 @@ def read_config():
                 max_table_entries = int(general.findtext('maxTableEntries', '0'))
             except (ValueError, TypeError):
                 max_table_entries = 0
+            try:
+                default_interval = max(MIN_INTERVAL, int(general.findtext('defaultInterval') or 30))
+            except (ValueError, TypeError):
+                default_interval = 30
+        syslog.setlogmask(LOG_LEVELS.get(log_level, LOG_LEVELS['warn']))
 
         watcher_container = aliaser.find('watchers')
         if watcher_container is None:
@@ -74,10 +166,18 @@ def read_config():
             if watcher_el.tag != 'watcher':
                 continue
             uuid = watcher_el.get('uuid', '')
+            name = watcher_el.findtext('name', '')
+            raw_interval = (watcher_el.findtext('interval') or '').strip()
+            try:
+                interval = max(MIN_INTERVAL, int(raw_interval)) if raw_interval else default_interval
+            except ValueError:
+                syslog.syslog(syslog.LOG_WARNING,
+                              f'aliaserd: [{name}] invalid interval, using {default_interval}s')
+                interval = default_interval
             w = {
                 'uuid': uuid,
                 'enabled': watcher_el.findtext('enabled', '0'),
-                'name': watcher_el.findtext('name', ''),
+                'name': name,
                 'type': watcher_el.findtext('type', 'dns'),
                 'hostname': watcher_el.findtext('hostname', ''),
                 'hostnames': watcher_el.findtext('hostnames', ''),
@@ -85,13 +185,23 @@ def read_config():
                 'staticEntries': watcher_el.findtext('staticEntries', ''),
                 'includeAliases': watcher_el.findtext('includeAliases', ''),
                 'alias': watcher_el.findtext('alias', ''),
-                'interval': int(watcher_el.findtext('interval', '30')),
+                'interval': interval,
                 'addressFamily': watcher_el.findtext('addressFamily', 'ipv4'),
                 'description': watcher_el.findtext('description', ''),
+                'dnsServer': watcher_el.findtext('dnsServer', ''),
             }
-            if w['enabled'] == '1' and w['alias']:
-                watchers.append(w)
+            if w['enabled'] != '1':
+                continue
+            # config.xml can be edited directly or arrive via HA sync, bypassing
+            # the model's validation, so check the table name again here.
+            if not is_valid_target_table(w['alias']):
+                syslog.syslog(syslog.LOG_ERR,
+                              f'aliaserd: [{name}] refusing target table {w["alias"]!r} '
+                              f'(invalid or reserved by OPNsense)')
+                continue
+            watchers.append(w)
 
+        mark_include_cycles(watchers)
         return watchers, log_level, max_table_entries
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, f'aliaserd: config parse error: {e}')
@@ -100,44 +210,167 @@ def read_config():
 
 # ---------- DNS resolution ----------
 
-def resolve_dns(hostname, address_family='ipv4'):
-    """Resolve a hostname to a sorted list of unique IPs."""
-    ips = set()
-    families = []
-    if address_family in ('ipv4', 'both'):
-        families.append(socket.AF_INET)
-    if address_family in ('ipv6', 'both'):
-        families.append(socket.AF_INET6)
+class DNSError(Exception):
+    pass
 
-    for af in families:
+
+# qtype name -> (wire type, address family, rdata length)
+DNS_TYPES = {'A': (1, socket.AF_INET, 4), 'AAAA': (28, socket.AF_INET6, 16)}
+
+
+def _encode_name(hostname):
+    out = b''
+    for label in hostname.rstrip('.').split('.'):
+        raw = label.encode('idna')
+        if not 0 < len(raw) < 64:
+            raise DNSError(f'invalid hostname {hostname!r}')
+        out += bytes([len(raw)]) + raw
+    return out + b'\0'
+
+
+def _skip_name(msg, off):
+    """Return the offset just past a (possibly compressed) name at off."""
+    while True:
+        length = msg[off]
+        if length == 0:
+            return off + 1
+        if length & 0xC0 == 0xC0:  # compression pointer ends the name
+            return off + 2
+        off += 1 + length
+
+
+def _parse_answers(resp, qtype, question_len):
+    rtype, family, size = DNS_TYPES[qtype]
+    try:
+        flags, _qdcount, ancount = struct.unpack('>HHH', resp[2:8])
+        if not flags & 0x8000:
+            raise DNSError('not a response')
+        rcode = flags & 0xF
+        if rcode == 3:  # NXDOMAIN
+            return [], None
+        if rcode != 0:
+            raise DNSError(f'server returned rcode {rcode}')
+        off = 12 + question_len  # the caller verified the question is ours
+        ips, ttls = [], []
+        for _ in range(ancount):
+            off = _skip_name(resp, off)
+            atype, aclass, ttl, rdlen = struct.unpack('>HHIH', resp[off:off + 10])
+            off += 10
+            rdata = resp[off:off + rdlen]
+            off += rdlen
+            # CNAMEs in the chain are skipped; their target's records follow
+            if atype == rtype and aclass == 1 and rdlen == size and len(rdata) == size:
+                ips.append(socket.inet_ntop(family, rdata))
+                ttls.append(ttl)
+        return ips, (min(ttls) if ttls else None)
+    except (struct.error, IndexError, ValueError) as e:
+        raise DNSError(f'malformed response: {e}')
+
+
+def dns_query(server, hostname, qtype, timeout=3.0, tries=2):
+    """Minimal stub resolver: ask `server` one A or AAAA question over UDP.
+
+    Returns (addresses, ttl), ttl being the smallest TTL of the returned
+    records, or ([], None) for NXDOMAIN / no records. Raises DNSError or
+    OSError on failure. Replies are only accepted from the server we asked
+    (connected socket), with our random ID and our exact question.
+    """
+    question = _encode_name(hostname) + struct.pack('>HH', DNS_TYPES[qtype][0], 1)
+    for _ in range(tries):
+        header = os.urandom(2) + struct.pack('>HHHHH', 0x0100, 1, 0, 0, 0)  # RD, 1 question
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((server, DNS_PORT))
+            sock.send(header + question)
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
+                try:
+                    resp = sock.recv(4096)
+                except socket.timeout:
+                    break
+                if resp[:2] != header[:2] or resp[12:12 + len(question)].lower() != question.lower():
+                    continue  # stale reply to an earlier try, or spoofed
+                return _parse_answers(resp, qtype, len(question))
+    raise DNSError(f'no response from {server}')
+
+
+def resolve_dns(hostname, address_family='ipv4', dns_server=None):
+    """Resolve a hostname. Returns (sorted unique IPs, ttl or None).
+
+    With dns_server, query it directly (bypasses Unbound's cache, and gives
+    us the TTL). Otherwise use the system resolver, which reports no TTL.
+    """
+    qtypes = []
+    if address_family in ('ipv4', 'both'):
+        qtypes.append('A')
+    if address_family in ('ipv6', 'both'):
+        qtypes.append('AAAA')
+
+    if dns_server:
+        ips, ttls = set(), []
+        for qtype in qtypes:
+            try:
+                found, ttl = dns_query(dns_server, hostname, qtype)
+            except (OSError, DNSError) as e:
+                syslog.syslog(syslog.LOG_WARNING,
+                              f'aliaserd: {qtype} query for {hostname} at {dns_server} failed: {e}')
+                continue
+            ips.update(found)
+            if ttl is not None:
+                ttls.append(ttl)
+        return sorted(ips), (min(ttls) if ttls else None)
+
+    # Default: system resolver
+    ips = set()
+    for qtype in qtypes:
         try:
-            results = socket.getaddrinfo(hostname, None, af, socket.SOCK_STREAM)
+            results = socket.getaddrinfo(hostname, None, DNS_TYPES[qtype][1], socket.SOCK_STREAM)
             for r in results:
                 ips.add(r[4][0])
         except socket.gaierror:
             pass
 
-    return sorted(ips)
+    return sorted(ips), None
 
 
 # ---------- URL fetching ----------
 
 def fetch_url(url, timeout=30):
-    """Fetch a URL and parse one IP/CIDR per line."""
-    ips = set()
+    """Fetch a URL and parse one IP/CIDR per line.
+
+    Returns a sorted list, or None on failure. The feed is remote input that
+    ends up in pfctl, so anything that is not a valid IP/CIDR is dropped.
+    """
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'OPNsense-Aliaser/1.0'})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            for line in resp.read().decode('utf-8', errors='ignore').splitlines():
-                line = line.strip()
-                if not line or line.startswith('#') or line.startswith(';'):
-                    continue
-                # Basic validation: contains digits and dots/colons (IP or CIDR)
-                if any(c.isdigit() for c in line) and ('.' in line or ':' in line):
-                    ips.add(line)
+            body = resp.read(MAX_FEED_BYTES + 1)
     except Exception as e:
         syslog.syslog(syslog.LOG_WARNING, f'aliaserd: fetch error for {url}: {e}')
         return None  # None signals failure (distinct from empty set)
+    if len(body) > MAX_FEED_BYTES:
+        syslog.syslog(syslog.LOG_WARNING,
+                      f'aliaserd: feed {url} is larger than {MAX_FEED_BYTES} bytes, ignoring it')
+        return None
+
+    ips = set()
+    invalid = 0
+    for line in body.decode('utf-8', errors='ignore').splitlines():
+        # Drop comments, incl. trailing ones ("1.2.3.4 ; SBL123"), and any extra columns
+        line = line.split('#', 1)[0].split(';', 1)[0].strip()
+        if not line:
+            continue
+        entry = normalize_entry(line.split()[0])
+        if entry is None:
+            invalid += 1
+        else:
+            ips.add(entry)
+    if invalid:
+        syslog.syslog(syslog.LOG_WARNING,
+                      f'aliaserd: dropped {invalid} invalid line(s) from {url}')
     return sorted(ips)
 
 
@@ -158,7 +391,11 @@ def pfctl_show(alias):
 
 
 def pfctl_replace(alias, ips):
-    """Atomically replace all IPs in a pf table."""
+    """Atomically replace all IPs in a pf table.
+
+    Addresses go through a file (-f), never argv: a big feed would exceed
+    ARG_MAX, and an entry starting with '-' would be parsed as a pfctl option.
+    """
     if not ips:
         # Flush the table if empty
         try:
@@ -170,42 +407,133 @@ def pfctl_replace(alias, ips):
         except Exception:
             return False
 
+    fd, path = tempfile.mkstemp(prefix='aliaser-', suffix='.txt')
     try:
-        cmd = [PFCTL, '-t', alias, '-T', 'replace'] + list(ips)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        return result.returncode == 0
+        with os.fdopen(fd, 'w') as f:
+            f.write('\n'.join(ips) + '\n')
+        result = subprocess.run([PFCTL, '-t', alias, '-T', 'replace', '-f', path],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            syslog.syslog(syslog.LOG_ERR,
+                          f'aliaserd: pfctl replace failed for {alias}: {result.stderr.strip()}')
+            return False
+        return True
     except Exception as e:
         syslog.syslog(syslog.LOG_ERR, f'aliaserd: pfctl replace failed for {alias}: {e}')
         return False
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 # ---------- State management ----------
 
+#
+# Two processes write state.json: the daemon, and `aliaserd.py refresh`
+# (spawned by configd when the "Refresh Now" button is pressed). Every
+# write therefore goes through locked_state(), which re-reads the file
+# under an exclusive lock. Never keep a state dict in memory across checks,
+# or the next save will overwrite history recorded by the other process.
+
 def load_state():
-    """Load cached watcher state from disk."""
-    try:
-        with open(STATEFILE, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    """Load watcher state from disk."""
+    for path in (STATEFILE, LEGACY_STATEFILE):
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return {}
 
 
 def save_state(state):
-    """Persist watcher state to disk."""
+    """Persist watcher state atomically (readers never see a partial file)."""
     os.makedirs(os.path.dirname(STATEFILE), exist_ok=True)
-    with open(STATEFILE, 'w') as f:
+    tmp = STATEFILE + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATEFILE)
+
+
+class locked_state:
+    """Context manager: exclusive lock + fresh state; saves on clean exit.
+
+        with locked_state() as state:
+            check_watcher(w, state)
+    """
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(LOCKFILE), exist_ok=True)
+        self._lock = open(LOCKFILE, 'w')
+        fcntl.flock(self._lock, fcntl.LOCK_EX)
+        self.state = load_state()
+        return self.state
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                save_state(self.state)
+        finally:
+            fcntl.flock(self._lock, fcntl.LOCK_UN)
+            self._lock.close()
+        return False
 
 
 # ---------- Watcher logic ----------
 
-def check_watcher(watcher, state, max_table_entries=0):
+def gather_primary(watcher):
+    """Query the watcher's primary source (DNS or URL). Network I/O only.
+
+    Touches no state and no pf tables, so it is safe to run in a worker
+    thread. Returns {'desc': str, 'ips': set or None, 'ttl': int or None};
+    ips is None when the source failed, desc is '' when the watcher has no
+    primary source, ttl is only known for direct DNS queries.
     """
-    Check a single watcher. Returns True if the pf table was updated.
-    Updates state dict in-place.
+    primary = {'desc': '', 'ips': None, 'ttl': None}
+    if watcher['type'] == 'dns':
+        # Use hostnames (plural) first, fall back to hostname (legacy)
+        dns_hosts = split_csv(watcher.get('hostnames', '')) or split_csv(watcher.get('hostname', ''))
+        if dns_hosts:
+            primary['desc'] = ', '.join(dns_hosts)
+            af = watcher.get('addressFamily', 'ipv4')
+            dns_server = watcher.get('dnsServer', '').strip() or None
+            resolved, ttls = set(), []
+            for hostname in dns_hosts:
+                ips, ttl = resolve_dns(hostname, af, dns_server=dns_server)
+                resolved.update(ips)
+                if ttl is not None:
+                    ttls.append(ttl)
+            if resolved:
+                primary['ips'] = resolved
+                primary['ttl'] = min(ttls) if ttls else None
+    elif watcher['type'] == 'urltable':
+        url = watcher.get('url', '').strip()
+        if url:
+            primary['desc'] = url
+            # An empty feed is treated as a failure too: it is far more often a
+            # broken mirror or captive portal than a list that is really empty.
+            result = fetch_url(url)
+            if result:
+                primary['ips'] = set(result)
+    return primary
+
+
+def check_watcher(watcher, state, max_table_entries=0):
+    """Gather + apply in one go. Returns True if the pf table was updated."""
+    return apply_watcher(watcher, state, gather_primary(watcher), max_table_entries)
+
+
+def apply_watcher(watcher, state, primary, max_table_entries=0):
+    """
+    Merge a watcher's sources and update its pf table. Returns True if the
+    table was updated. Updates state dict in-place.
 
     Composite merge:
-      1. Primary source (DNS hostnames or URL) -> merged_ips
+      1. Primary source (result of gather_primary) -> merged_ips
       2. staticEntries CSV -> add to merged_ips
       3. includeAliases -> read each pf table, add to merged_ips
       4. pfctl_replace(alias, sorted(merged_ips))
@@ -230,84 +558,79 @@ def check_watcher(watcher, state, max_table_entries=0):
     ws.setdefault('history', [])
     ws.setdefault('alerts', [])
 
-    merged_ips = set()
-    primary_ok = False
+    now = time.time()
+    ws['last_check'] = now
 
-    # Step 1: Primary source
-    if wtype == 'dns':
-        # Use hostnames (plural) first, fall back to hostname (legacy)
-        hostnames_str = watcher.get('hostnames', '').strip()
-        if hostnames_str:
-            dns_hosts = [h.strip() for h in hostnames_str.split(',') if h.strip()]
-        else:
-            legacy = watcher.get('hostname', '').strip()
-            dns_hosts = [legacy] if legacy else []
-
-        if not dns_hosts and not watcher.get('staticEntries', '').strip() and not watcher.get('includeAliases', '').strip():
-            return False
-
-        af = watcher.get('addressFamily', 'ipv4')
-        for hostname in dns_hosts:
-            ips = resolve_dns(hostname, af)
-            if ips:
-                merged_ips.update(ips)
-                primary_ok = True
-
-        if dns_hosts and not primary_ok:
-            ws['last_error'] = f'DNS resolution returned no results for {", ".join(dns_hosts)}'
-            ws['consecutive_errors'] = ws.get('consecutive_errors', 0) + 1
-            ws['last_check'] = time.time()
-            syslog.syslog(syslog.LOG_WARNING,
-                          f'aliaserd: [{name}] no DNS results for {", ".join(dns_hosts)} '
-                          f'(errors: {ws["consecutive_errors"]})')
-            # Don't return yet — static/include sources may still contribute
-
-    elif wtype == 'urltable':
-        url = watcher.get('url', '').strip()
-        if url:
-            result = fetch_url(url)
-            if result is None:
-                ws['consecutive_errors'] = ws.get('consecutive_errors', 0) + 1
-                ws['last_check'] = time.time()
-                # Don't return yet — static/include sources may still contribute
-            elif result:
-                merged_ips.update(result)
-                primary_ok = True
-        elif not watcher.get('staticEntries', '').strip() and not watcher.get('includeAliases', '').strip():
-            return False
+    primary_desc = primary['desc']
+    primary_ips = primary['ips']
 
     # Step 2: Static entries
-    static_str = watcher.get('staticEntries', '').strip()
-    if static_str:
-        for entry in static_str.split(','):
-            entry = entry.strip()
-            if entry:
-                merged_ips.add(entry)
+    static_entries = []
+    for entry in split_csv(watcher.get('staticEntries', '')):
+        normalized = normalize_entry(entry)
+        if normalized is None:
+            syslog.syslog(syslog.LOG_WARNING,
+                          f'aliaserd: [{name}] ignoring invalid static entry {entry!r}')
+        else:
+            static_entries.append(normalized)
 
     # Step 3: Include aliases (read from their pf tables)
-    include_str = watcher.get('includeAliases', '').strip()
-    if include_str:
-        for inc_alias in include_str.split(','):
-            inc_alias = inc_alias.strip()
-            if not inc_alias or inc_alias == alias:  # Skip self-reference
-                continue
-            inc_ips = pfctl_show(inc_alias)
-            if inc_ips:
-                merged_ips.update(inc_ips)
-            else:
-                syslog.syslog(syslog.LOG_WARNING,
-                              f'aliaserd: [{name}] include alias {inc_alias} not accessible or empty')
+    include_aliases = []
+    for inc_alias in split_csv(watcher.get('includeAliases', '')):
+        if not TABLE_NAME_RE.match(inc_alias):
+            syslog.syslog(syslog.LOG_WARNING,
+                          f'aliaserd: [{name}] ignoring invalid include alias {inc_alias!r}')
+        elif inc_alias in watcher.get('cyclicIncludes', []):
+            syslog.syslog(syslog.LOG_WARNING,
+                          f'aliaserd: [{name}] skipping include {inc_alias}: '
+                          f'it leads back to {alias} (include loop)')
+        else:
+            include_aliases.append(inc_alias)
 
-    new_ips = sorted(merged_ips)
-
-    # If nothing resolved from any source and no static/include, it's an error
-    if not new_ips and not primary_ok and not static_str and not include_str:
+    if not primary_desc and not static_entries and not include_aliases:
         return False
 
-    ws['last_check'] = time.time()
-    if primary_ok or not (watcher.get('hostnames', '').strip() or watcher.get('hostname', '').strip() or watcher.get('url', '').strip()):
+    merged_ips = set(static_entries)
+    for inc_alias in include_aliases:
+        inc_ips = pfctl_show(inc_alias)
+        if inc_ips:
+            merged_ips.update(inc_ips)
+        else:
+            syslog.syslog(syslog.LOG_WARNING,
+                          f'aliaserd: [{name}] include alias {inc_alias} not accessible or empty')
+
+    if primary_ips is not None:
+        merged_ips.update(primary_ips)
+        ws['primary_ips'] = sorted(primary_ips)
+        ws['primary_ok_at'] = now
         ws['last_error'] = ''
         ws['consecutive_errors'] = 0
+    elif primary_desc:
+        ws['consecutive_errors'] = ws.get('consecutive_errors', 0) + 1
+        error = f'no results from {primary_desc}'
+        if 'primary_ips' not in ws:
+            # Never had a good answer (new watcher, or state from an older
+            # version): we can't tell which table entries came from this
+            # source, so leave the table alone rather than guess.
+            ws['last_error'] = error + '; table left unchanged'
+            syslog.syslog(syslog.LOG_WARNING, f'aliaserd: [{name}] {ws["last_error"]} '
+                          f'(errors: {ws["consecutive_errors"]})')
+            return False
+        age = now - ws.get('primary_ok_at', 0)
+        if age < STALE_PRIMARY_MAX_AGE:
+            merged_ips.update(ws['primary_ips'])
+            error += f'; keeping {len(ws["primary_ips"])} last known entries'
+        else:
+            error += f'; last good result is {int(age // 3600)}h old, dropping it'
+        ws['last_error'] = error
+        syslog.syslog(syslog.LOG_WARNING, f'aliaserd: [{name}] {error} '
+                      f'(errors: {ws["consecutive_errors"]})')
+    else:
+        # Static/include-only watcher: nothing here can fail
+        ws['last_error'] = ''
+        ws['consecutive_errors'] = 0
+
+    new_ips = sorted(merged_ips)
 
     # Compare with current table
     current_ips = pfctl_show(alias)
@@ -318,6 +641,7 @@ def check_watcher(watcher, state, max_table_entries=0):
         return False
 
     if new_ips == current_ips:
+        syslog.syslog(syslog.LOG_DEBUG, f'aliaserd: [{name}] no change ({len(new_ips)} entries)')
         return False
 
     # Update the table
@@ -360,71 +684,170 @@ def check_watcher(watcher, state, max_table_entries=0):
         ws['history'] = ws['history'][-20:]  # Keep last 20 changes
 
         return True
+    ws['last_error'] = f'pfctl could not update table {alias} (see system log)'
     return False
 
 
 # ---------- Daemon loop ----------
+
+def restore_tables(watchers):
+    """Refill empty pf tables from the last known state.
+
+    pf tables start empty after a reboot. Until the first lookup finishes
+    (a feed can take many seconds) an allow-list rule would lock people out
+    and a block-list rule would block nothing. Tables that already have
+    entries (e.g. a plain daemon restart) are left alone.
+    """
+    state = load_state()
+    for w in watchers:
+        ws = state.get(w['name'], {})
+        if ws.get('alias') != w['alias']:
+            continue  # target table changed since this state was written
+        saved = [e for e in (normalize_entry(x) for x in ws.get('current_ips', [])) if e]
+        if saved and pfctl_show(w['alias']) == [] and pfctl_replace(w['alias'], saved):
+            syslog.syslog(syslog.LOG_NOTICE,
+                          f'aliaserd: [{w["name"]}] restored {len(saved)} entries '
+                          f'into {w["alias"]} from saved state')
+
+
+def next_check_delay(watcher, primary):
+    """Seconds until a watcher's next check.
+
+    Normally its interval. If the DNS answer's TTL runs out sooner, check
+    right when it does: that is when a changed record becomes visible, so
+    waiting for the interval only adds delay. Never later than the
+    interval, never sooner than MIN_TTL_WAIT.
+    """
+    ttl = (primary or {}).get('ttl')
+    if ttl is None:
+        return watcher['interval']
+    return max(MIN_TTL_WAIT, min(watcher['interval'], ttl + 1))
+
+
+class Scheduler:
+    """Runs each watcher on its own timer.
+
+    Lookups (DNS, URL fetch) run in a thread pool so one slow feed can't
+    delay the other watchers. Applying results - pf updates and state
+    writes - always happens on the thread calling tick().
+    """
+
+    def __init__(self, pool):
+        self.pool = pool
+        self.next_due = {}  # watcher name -> timestamp
+        self.pending = {}   # watcher name -> (watcher dict, future)
+
+    def tick(self, watchers, max_table_entries, now=None):
+        """Apply finished lookups, start due ones. Returns seconds to sleep."""
+        now = time.time() if now is None else now
+        by_name = {w['name']: w for w in watchers}
+
+        for name, (w, future) in list(self.pending.items()):
+            if not future.done():
+                continue
+            del self.pending[name]
+            if by_name.get(name) != w:
+                continue  # removed or edited meanwhile; rerun with the new config
+            changed, primary = False, None
+            try:
+                primary = future.result()
+                with locked_state() as state:
+                    changed = apply_watcher(w, state, primary, max_table_entries)
+            except Exception as e:
+                syslog.syslog(syslog.LOG_ERR, f'aliaserd: [{name}] unexpected error: {e}')
+            self.next_due[name] = now + next_check_delay(w, primary)
+            if changed:
+                self._wake_dependents(w['alias'], watchers, now)
+
+        for w in watchers:
+            name = w['name']
+            if name not in self.pending and now >= self.next_due.get(name, 0):
+                self.pending[name] = (w, self.pool.submit(gather_primary, w))
+
+        for name in list(self.next_due):
+            if name not in by_name:
+                del self.next_due[name]
+
+        if self.pending:
+            return 0.5
+        upcoming = [self.next_due.get(name, now) for name in by_name] + [now + 10]
+        return max(0.5, min(upcoming) - now)
+
+    def _wake_dependents(self, alias, watchers, now):
+        # Watchers that include this table re-merge right away instead of
+        # waiting for their own interval.
+        for w in watchers:
+            if alias in split_csv(w['includeAliases']) and alias not in w.get('cyclicIncludes', []):
+                syslog.syslog(syslog.LOG_INFO,
+                              f'aliaserd: [{w["name"]}] included table {alias} changed, re-merging now')
+                self.next_due[w['name']] = now
+
+
+def config_signature():
+    try:
+        st = os.stat(CONFIG_XML)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
 
 def run_daemon():
     """Main daemon loop. Reads config, runs watchers on their intervals."""
     syslog.openlog('aliaserd', syslog.LOG_PID, syslog.LOG_LOCAL4)
     syslog.syslog(syslog.LOG_NOTICE, 'aliaserd: starting')
 
-    # Write PID file
+    # Hold an exclusive lock on the pidfile for our whole life, so two
+    # `start` calls racing each other can't leave two daemons running.
     os.makedirs(os.path.dirname(PIDFILE), exist_ok=True)
-    with open(PIDFILE, 'w') as f:
-        f.write(str(os.getpid()))
+    pidfile = open(PIDFILE, 'a+')
+    try:
+        fcntl.flock(pidfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        syslog.syslog(syslog.LOG_NOTICE, 'aliaserd: another instance is running, exiting')
+        return
+    pidfile.seek(0)
+    pidfile.truncate()
+    pidfile.write(str(os.getpid()))
+    pidfile.flush()
 
-    state = load_state()
     running = True
 
     def handle_signal(signum, frame):
         nonlocal running
         running = False
 
+    def wait(seconds):
+        # time.sleep() resumes after a signal (PEP 475), so sleep in short
+        # slices; otherwise SIGTERM waits out the sleep and `stop` escalates
+        # to SIGKILL.
+        deadline = time.time() + seconds
+        while running and time.time() < deadline:
+            time.sleep(min(0.5, max(0, deadline - time.time())))
+
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    # Track per-watcher last-run times
-    last_run = {}
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    scheduler = Scheduler(pool)
+    config_sig = None
+    watchers, max_table_entries = [], 0
+    restored = False
 
     while running:
-        watchers, log_level, max_table_entries = read_config()
-        if not watchers:
-            time.sleep(10)
-            continue
+        # The loop wakes every 0.5s while lookups are in flight; only
+        # re-parse config.xml when it actually changed.
+        sig = config_signature()
+        if sig != config_sig or sig is None:
+            config_sig = sig
+            watchers, log_level, max_table_entries = read_config()
+        if not restored:
+            restore_tables(watchers)
+            restored = True
+        wait(min(scheduler.tick(watchers, max_table_entries), 10))
 
-        now = time.time()
-        next_wake = now + 10  # Default wake in 10s if nothing scheduled
-
-        for w in watchers:
-            name = w['name']
-            interval = w['interval']
-            last = last_run.get(name, 0)
-
-            if now - last >= interval:
-                try:
-                    changed = check_watcher(w, state, max_table_entries)
-                    if changed:
-                        save_state(state)
-                except Exception as e:
-                    syslog.syslog(syslog.LOG_ERR,
-                                  f'aliaserd: [{name}] unexpected error: {e}')
-                last_run[name] = now
-
-            # Calculate next wake time
-            next_for_watcher = last_run.get(name, now) + interval
-            if next_for_watcher < next_wake:
-                next_wake = next_for_watcher
-
-        # Save state periodically
-        save_state(state)
-
-        # Sleep until next watcher needs to run
-        sleep_time = max(1, next_wake - time.time())
-        time.sleep(min(sleep_time, 10))  # Cap at 10s for responsiveness
-
-    # Cleanup
+    # Cleanup. Worker threads may still be blocked in a lookup; don't wait
+    # for them (the caller exits the process with os._exit()).
+    pool.shutdown(wait=False, cancel_futures=True)
     syslog.syslog(syslog.LOG_NOTICE, 'aliaserd: stopping')
     try:
         os.unlink(PIDFILE)
@@ -435,13 +858,25 @@ def run_daemon():
 # ---------- Daemon control ----------
 
 def get_pid():
-    """Read PID from pidfile, return None if not running."""
+    """Read PID from pidfile, return None if the daemon is not running.
+
+    After a crash or SIGKILL the pidfile is stale and its PID may belong to
+    an unrelated process by now, so check the command line before trusting
+    it (cmd_stop sends signals to whatever PID this returns).
+    """
     try:
         with open(PIDFILE, 'r') as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)  # Check if process exists
+        # -ww: without a tty, ps truncates the command line (~80 columns),
+        # which can cut off the script name
+        result = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'command='],
+                                capture_output=True, text=True, timeout=5)
+        if 'aliaserd' not in result.stdout:
+            return None
         return pid
-    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError,
+            OSError, subprocess.SubprocessError):
         return None
 
 
@@ -457,18 +892,22 @@ def cmd_start():
     pid = os.fork()
     if pid > 0:
         os._exit(0)
-    # Redirect stdio
-    sys.stdin.close()
-    sys.stdout = open('/dev/null', 'w')
-    sys.stderr = open('/dev/null', 'w')
+    # Detach stdio at the fd level: replacing sys.stdout alone leaves fds 1/2
+    # pointing at the caller's pipe, and a caller capturing our output
+    # (configd, a test) would then wait forever for EOF.
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    os.close(devnull)
     run_daemon()
+    os._exit(0)  # don't wait for lookup threads still blocked on the network
 
 
 def cmd_stop():
     pid = get_pid()
     if pid:
         os.kill(pid, signal.SIGTERM)
-        for _ in range(50):  # Wait up to 5s
+        for _ in range(100):  # Wait up to 10s (a check in progress may take a while)
             time.sleep(0.1)
             if not get_pid():
                 return
@@ -538,6 +977,7 @@ def cmd_status():
             'sources': sources,
             'alias': w['alias'],
             'interval': w['interval'],
+            'dnsServer': w.get('dnsServer', ''),
             'staticEntries': w.get('staticEntries', ''),
             'includeAliases': w.get('includeAliases', ''),
             'current_ips': current_table or [],
@@ -551,6 +991,44 @@ def cmd_status():
         }
 
     print(json.dumps(output, indent=2))
+
+
+def health_problems(watchers, state, daemon_running, now=None):
+    """List what a monitoring system should alert on (empty list = healthy)."""
+    now = time.time() if now is None else now
+    problems = [] if daemon_running else ['daemon is not running']
+    for w in watchers:
+        name, ws = w['name'], state.get(w['name'], {})
+        errors = ws.get('consecutive_errors', 0)
+        if errors >= HEALTH_ERROR_THRESHOLD:
+            problems.append(f'{name}: {errors} failures in a row: {ws.get("last_error", "")}')
+        for alert in ws.get('alerts', []):
+            problems.append(f'{name}: {alert.get("message", "")}')
+        last = ws.get('last_check', 0)
+        # last == 0: not checked yet (new watcher, daemon just started)
+        if daemon_running and last and now - last > max(3 * w['interval'], w['interval'] + 120):
+            problems.append(f'{name}: not checked for {int(now - last)}s (interval {w["interval"]}s)')
+    return problems
+
+
+def plugin_enabled():
+    try:
+        return ET.parse(CONFIG_XML).getroot().findtext('.//OPNsense/Aliaser/general/enabled') == '1'
+    except (OSError, ET.ParseError):
+        return False
+
+
+def cmd_health():
+    """Monit-style check: exit 0 when healthy, 1 with one line per problem."""
+    if not plugin_enabled():
+        print('OK: aliaser is disabled')
+        return
+    watchers, _, _ = read_config()
+    problems = health_problems(watchers, load_state(), get_pid() is not None)
+    if problems:
+        print('\n'.join(problems))
+        sys.exit(1)
+    print(f'OK: {len(watchers)} watcher(s) healthy')
 
 
 def cmd_reconfigure():
@@ -569,13 +1047,16 @@ def cmd_reconfigure():
 
 def cmd_refresh(uuid):
     """Force immediate refresh of a single watcher by UUID."""
+    if not UUID_RE.match(uuid):
+        print(json.dumps({'status': 'error', 'message': 'invalid uuid'}))
+        return
     watchers, _, max_table_entries = read_config()
-    state = load_state()
 
     for w in watchers:
         if w['uuid'] == uuid:
-            changed = check_watcher(w, state, max_table_entries)
-            save_state(state)
+            primary = gather_primary(w)  # network I/O outside the state lock
+            with locked_state() as state:
+                changed = apply_watcher(w, state, primary, max_table_entries)
             print(json.dumps({
                 'status': 'ok',
                 'watcher': w['name'],
@@ -591,7 +1072,7 @@ def cmd_refresh(uuid):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(f'Usage: {sys.argv[0]} start|stop|restart|status|reconfigure|refresh [uuid]')
+        print(f'Usage: {sys.argv[0]} start|stop|restart|status|health|reconfigure|refresh [uuid]')
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -605,6 +1086,8 @@ if __name__ == '__main__':
         cmd_status()
     elif cmd == 'reconfigure':
         cmd_reconfigure()
+    elif cmd == 'health':
+        cmd_health()
     elif cmd == 'refresh' and len(sys.argv) > 2:
         cmd_refresh(sys.argv[2])
     else:

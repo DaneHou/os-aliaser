@@ -9,13 +9,13 @@
         <id>general.defaultInterval</id>
         <label>Default Interval (seconds)</label>
         <type>text</type>
-        <help>Default check interval for new watchers. Individual watchers can override this. Range: 10-3600 seconds.</help>
+        <help>Pre-filled check interval for new watchers, and the interval used when a watcher's own interval is left empty. Range: 10-3600 seconds.</help>
     </field>
     <field>
         <id>general.logLevel</id>
         <label>Log Level</label>
         <type>dropdown</type>
-        <help>Daemon logging verbosity. Debug logs every DNS lookup; Info logs changes; Warning logs failures only.</help>
+        <help>Daemon logging verbosity. Error: errors only. Warning (default): failures, alerts and table changes. Info: also informational messages (e.g. nested alias re-merges). Debug: every check, including checks with no change.</help>
     </field>
     <field>
         <id>general.maxTableEntries</id>

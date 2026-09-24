@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-09-24
+
+### Fixed
+
+- **Change history no longer disappears.** The daemon and "Refresh Now" each kept
+  their own copy of the state and overwrote each other's history. All state
+  writes now go through a lock and are atomic. State moved from `/var/run/aliaser`
+  (wiped at boot) to `/var/db/aliaser`; existing history is migrated.
+- A DNS or feed failure (including an empty feed) no longer shrinks the table;
+  the source's last good result is kept for up to 24 hours.
+- Include loops (A includes B, B includes A) no longer make IPs impossible to remove.
+- One watcher with a bad interval no longer disables all watchers.
+- Feed failures now show an error message on the status page.
+- `stop` could mistake a running daemon for a dead one (`ps` output truncated to
+  80 columns) and orphan it; `start` could hang a caller capturing its output.
+- `stop` shuts the daemon down gracefully instead of always escalating to SIGKILL,
+  never signals an unrelated process that reused a stale PID, and two racing
+  `start` calls can no longer leave two daemons running.
+
+### Added
+
+- **Tables survive reboots**: the daemon refills empty tables from the last known state
+  on start, instead of leaving them empty until the first lookup finishes.
+- **Parallel lookups**: a slow or timing-out feed no longer delays other watchers.
+- **Instant nested updates**: when a table changes, watchers that include it re-merge
+  immediately instead of on their own interval.
+- **TTL-aware DNS**: watchers with a custom DNS server re-check as soon as the record's
+  TTL expires (never later than their interval). `dnspython` is no longer needed.
+- **`aliaserd.py health`** for Monit alerting (see README).
+- Automated tests (`tests/`, pytest with a fake pfctl) and GitHub Actions CI.
+
+### Changed
+
+- `logLevel` now takes effect (Warning, the default, still logs table changes).
+- `defaultInterval` now pre-fills new watchers and applies when a watcher's interval is empty.
+- `make install` restarts a running daemon so upgrades take effect.
+
+### Security
+
+- Feed and static entries are validated as IPs/CIDRs and written to `pfctl`
+  via a file, so a malicious feed can no longer inject `pfctl` options.
+- Feeds larger than 16 MB are rejected.
+- "Refresh Now" validates the UUID and passes it to configd escaped.
+- Stored XSS fixed on the status, watchers and log pages; the log page only
+  shows lines from the `aliaserd` process.
+- Watchers can no longer target OPNsense's built-in tables (`bogons`, `sshlockout`, `__*`, ...).
+- The Status privilege no longer grants service control or alias creation.
+
 ## [1.1.0] - 2026-03-05
 
 ### Composite Watchers

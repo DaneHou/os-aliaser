@@ -45,6 +45,7 @@ Follow OPNsense conventions:
 - PEP 8 with 4-space indentation
 - Use `syslog` for operational messages (not `print`)
 - Target Python 3.9+ (the version bundled with OPNsense)
+- Standard library only — no `pip`/`pkg` dependencies
 - Match the patterns in `aliaserd.py`
 
 ### XML (MVC Models, Menus, ACLs)
@@ -73,7 +74,7 @@ Use a descriptive prefix:
 1. Fork the repository on GitHub
 2. Create a feature branch from `main`
 3. Make your changes
-4. Test on an OPNsense installation (see below)
+4. Run the automated tests, and test on an OPNsense installation (see below)
 5. Commit with a clear message describing what changed and why
 6. Push your branch and open a pull request against `main`
 
@@ -91,7 +92,23 @@ a race condition where the new daemon couldn't write the PID file.
 
 ## Testing
 
-Before submitting a PR, verify the following on an OPNsense VM:
+### Automated tests
+
+The daemon has a pytest suite that runs anywhere (no OPNsense needed). It
+drives the real `aliaserd.py` against a fake `pfctl` (`tests/fake_pfctl.py`,
+tables are plain files) and fake DNS answers (`tests/harness.py`):
+
+```sh
+pip install pytest
+python3 -m pytest -q tests
+```
+
+CI runs it on Python 3.9 and 3.11 for every push, plus `php -l` and an XML
+well-formedness check. Any change to daemon behaviour should come with a test.
+
+### Manual checklist
+
+The UI, configd and real pf still need an OPNsense VM. Before submitting a PR, verify:
 
 - [ ] `make install` completes without errors
 - [ ] The Services > Aliaser menu appears (after browser hard-refresh)
@@ -104,7 +121,8 @@ Before submitting a PR, verify the following on an OPNsense VM:
 - [ ] Start/Stop/Restart buttons on status page work correctly
 - [ ] Disable a watcher and apply — it stops being checked
 - [ ] `make uninstall` cleanly removes the plugin
-- [ ] Reboot the OPNsense VM — daemon restarts and watchers resume
+- [ ] Reboot the OPNsense VM — daemon restarts, logs `restored N entries`, tables are filled right away
+- [ ] `aliaserd.py health` prints `OK` (and exits 1 with a reason after stopping the daemon)
 
 For daemon debugging:
 
@@ -134,7 +152,7 @@ Open a [GitHub issue](https://github.com/DaneHou/os-aliaser/issues/new) with:
 
 ## Pull Request Process
 
-1. Fill out the PR template (description, testing checklist)
+1. Describe what changed and why, and which tests/checklist items you ran
 2. Keep PRs focused — one logical change per PR
 3. Maintainers will review within a few days
 4. Address review feedback by pushing additional commits (no force-push)
