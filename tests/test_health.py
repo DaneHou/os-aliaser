@@ -46,3 +46,14 @@ def test_cmd_health_exit_codes(env, monkeypatch, capsys):
         env.mod.cmd_health()
     assert exc.value.code == 1
     assert 'daemon is not running' in capsys.readouterr().out
+
+
+def test_disabled_plugin_is_not_an_alert(env, monkeypatch, capsys):
+    env.write_config({'uuid': UUID1, 'name': 'w', 'alias': 'T', 'interval': 60})
+    with open(env.mod.CONFIG_XML) as f:
+        xml = f.read().replace('<general><enabled>1</enabled>', '<general><enabled>0</enabled>')
+    with open(env.mod.CONFIG_XML, 'w') as f:
+        f.write(xml)
+    monkeypatch.setattr(env.mod, 'get_pid', lambda: None)
+    env.mod.cmd_health()  # no SystemExit
+    assert 'disabled' in capsys.readouterr().out

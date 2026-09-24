@@ -1011,8 +1011,18 @@ def health_problems(watchers, state, daemon_running, now=None):
     return problems
 
 
+def plugin_enabled():
+    try:
+        return ET.parse(CONFIG_XML).getroot().findtext('.//OPNsense/Aliaser/general/enabled') == '1'
+    except (OSError, ET.ParseError):
+        return False
+
+
 def cmd_health():
     """Monit-style check: exit 0 when healthy, 1 with one line per problem."""
+    if not plugin_enabled():
+        print('OK: aliaser is disabled')
+        return
     watchers, _, _ = read_config()
     problems = health_problems(watchers, load_state(), get_pid() is not None)
     if problems:
