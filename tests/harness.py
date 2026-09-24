@@ -30,9 +30,10 @@ def load(testdir):
     def fake_resolve(hostname, address_family='ipv4', dns_server=None):
         try:
             with open(os.path.join(testdir, 'dns.json')) as f:
-                return list(json.load(f).get(hostname, []))
+                return list(json.load(f).get(hostname, [])), None
         except (FileNotFoundError, ValueError):
-            return []
+            return [], None
+    mod.real_resolve_dns = mod.resolve_dns  # for tests of the DNS client itself
     mod.resolve_dns = fake_resolve
     return mod
 

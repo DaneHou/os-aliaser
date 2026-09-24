@@ -33,6 +33,7 @@ import os
 import re
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import syslog
@@ -50,6 +51,10 @@ CONFIG_XML = '/conf/config.xml'
 PFCTL = '/sbin/pfctl'
 
 MIN_INTERVAL = 10
+# With a TTL from a direct DNS query, re-check when it expires, but not more
+# often than this (a TTL of 0 would otherwise mean a busy loop).
+MIN_TTL_WAIT = 5
+DNS_PORT = 53
 MAX_FEED_BYTES = 16 * 1024 * 1024
 # When a DNS/URL source fails, keep serving its last good answer for this
 # long instead of shrinking the table (an allow-list would lock people out,
@@ -202,68 +207,130 @@ def read_config():
 
 # ---------- DNS resolution ----------
 
-_dnspython_import_failed = False
+class DNSError(Exception):
+    pass
+
+
+# qtype name -> (wire type, address family, rdata length)
+DNS_TYPES = {'A': (1, socket.AF_INET, 4), 'AAAA': (28, socket.AF_INET6, 16)}
+
+
+def _encode_name(hostname):
+    out = b''
+    for label in hostname.rstrip('.').split('.'):
+        raw = label.encode('idna')
+        if not 0 < len(raw) < 64:
+            raise DNSError(f'invalid hostname {hostname!r}')
+        out += bytes([len(raw)]) + raw
+    return out + b'\0'
+
+
+def _skip_name(msg, off):
+    """Return the offset just past a (possibly compressed) name at off."""
+    while True:
+        length = msg[off]
+        if length == 0:
+            return off + 1
+        if length & 0xC0 == 0xC0:  # compression pointer ends the name
+            return off + 2
+        off += 1 + length
+
+
+def _parse_answers(resp, qtype, question_len):
+    rtype, family, size = DNS_TYPES[qtype]
+    try:
+        flags, _qdcount, ancount = struct.unpack('>HHH', resp[2:8])
+        if not flags & 0x8000:
+            raise DNSError('not a response')
+        rcode = flags & 0xF
+        if rcode == 3:  # NXDOMAIN
+            return [], None
+        if rcode != 0:
+            raise DNSError(f'server returned rcode {rcode}')
+        off = 12 + question_len  # the caller verified the question is ours
+        ips, ttls = [], []
+        for _ in range(ancount):
+            off = _skip_name(resp, off)
+            atype, aclass, ttl, rdlen = struct.unpack('>HHIH', resp[off:off + 10])
+            off += 10
+            rdata = resp[off:off + rdlen]
+            off += rdlen
+            # CNAMEs in the chain are skipped; their target's records follow
+            if atype == rtype and aclass == 1 and rdlen == size and len(rdata) == size:
+                ips.append(socket.inet_ntop(family, rdata))
+                ttls.append(ttl)
+        return ips, (min(ttls) if ttls else None)
+    except (struct.error, IndexError, ValueError) as e:
+        raise DNSError(f'malformed response: {e}')
+
+
+def dns_query(server, hostname, qtype, timeout=3.0, tries=2):
+    """Minimal stub resolver: ask `server` one A or AAAA question over UDP.
+
+    Returns (addresses, ttl), ttl being the smallest TTL of the returned
+    records, or ([], None) for NXDOMAIN / no records. Raises DNSError or
+    OSError on failure. Replies are only accepted from the server we asked
+    (connected socket), with our random ID and our exact question.
+    """
+    question = _encode_name(hostname) + struct.pack('>HH', DNS_TYPES[qtype][0], 1)
+    for _ in range(tries):
+        header = os.urandom(2) + struct.pack('>HHHHH', 0x0100, 1, 0, 0, 0)  # RD, 1 question
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((server, DNS_PORT))
+            sock.send(header + question)
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
+                try:
+                    resp = sock.recv(4096)
+                except socket.timeout:
+                    break
+                if resp[:2] != header[:2] or resp[12:12 + len(question)].lower() != question.lower():
+                    continue  # stale reply to an earlier try, or spoofed
+                return _parse_answers(resp, qtype, len(question))
+    raise DNSError(f'no response from {server}')
+
 
 def resolve_dns(hostname, address_family='ipv4', dns_server=None):
-    """Resolve a hostname to a sorted list of unique IPs.
+    """Resolve a hostname. Returns (sorted unique IPs, ttl or None).
 
-    If dns_server is provided, query it directly via dnspython
-    (bypasses OS resolver cache). Otherwise use socket.getaddrinfo.
+    With dns_server, query it directly (bypasses Unbound's cache, and gives
+    us the TTL). Otherwise use the system resolver, which reports no TTL.
     """
-    global _dnspython_import_failed
+    qtypes = []
+    if address_family in ('ipv4', 'both'):
+        qtypes.append('A')
+    if address_family in ('ipv6', 'both'):
+        qtypes.append('AAAA')
 
     if dns_server:
-        try:
-            import dns.resolver
-            import dns.exception
-        except ImportError:
-            if not _dnspython_import_failed:
-                _dnspython_import_failed = True
-                syslog.syslog(syslog.LOG_ERR,
-                              'aliaserd: dnspython not installed — '
-                              'run: pkg install py311-dnspython')
-            return []
-
-        resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = [dns_server]
-        resolver.lifetime = 10
-
-        ips = set()
-        rdtypes = []
-        if address_family in ('ipv4', 'both'):
-            rdtypes.append('A')
-        if address_family in ('ipv6', 'both'):
-            rdtypes.append('AAAA')
-
-        for rdtype in rdtypes:
+        ips, ttls = set(), []
+        for qtype in qtypes:
             try:
-                answers = resolver.resolve(hostname, rdtype)
-                for rdata in answers:
-                    ips.add(rdata.address)
-            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer,
-                    dns.resolver.NoNameservers, dns.exception.Timeout,
-                    dns.exception.DNSException):
-                pass
-
-        return sorted(ips)
+                found, ttl = dns_query(dns_server, hostname, qtype)
+            except (OSError, DNSError) as e:
+                syslog.syslog(syslog.LOG_WARNING,
+                              f'aliaserd: {qtype} query for {hostname} at {dns_server} failed: {e}')
+                continue
+            ips.update(found)
+            if ttl is not None:
+                ttls.append(ttl)
+        return sorted(ips), (min(ttls) if ttls else None)
 
     # Default: system resolver
     ips = set()
-    families = []
-    if address_family in ('ipv4', 'both'):
-        families.append(socket.AF_INET)
-    if address_family in ('ipv6', 'both'):
-        families.append(socket.AF_INET6)
-
-    for af in families:
+    for qtype in qtypes:
         try:
-            results = socket.getaddrinfo(hostname, None, af, socket.SOCK_STREAM)
+            results = socket.getaddrinfo(hostname, None, DNS_TYPES[qtype][1], socket.SOCK_STREAM)
             for r in results:
                 ips.add(r[4][0])
         except socket.gaierror:
             pass
 
-    return sorted(ips)
+    return sorted(ips), None
 
 
 # ---------- URL fetching ----------
@@ -419,10 +486,11 @@ def gather_primary(watcher):
     """Query the watcher's primary source (DNS or URL). Network I/O only.
 
     Touches no state and no pf tables, so it is safe to run in a worker
-    thread. Returns {'desc': str, 'ips': set or None}; ips is None when the
-    source failed, desc is '' when the watcher has no primary source.
+    thread. Returns {'desc': str, 'ips': set or None, 'ttl': int or None};
+    ips is None when the source failed, desc is '' when the watcher has no
+    primary source, ttl is only known for direct DNS queries.
     """
-    primary = {'desc': '', 'ips': None}
+    primary = {'desc': '', 'ips': None, 'ttl': None}
     if watcher['type'] == 'dns':
         # Use hostnames (plural) first, fall back to hostname (legacy)
         dns_hosts = split_csv(watcher.get('hostnames', '')) or split_csv(watcher.get('hostname', ''))
@@ -430,11 +498,15 @@ def gather_primary(watcher):
             primary['desc'] = ', '.join(dns_hosts)
             af = watcher.get('addressFamily', 'ipv4')
             dns_server = watcher.get('dnsServer', '').strip() or None
-            resolved = set()
+            resolved, ttls = set(), []
             for hostname in dns_hosts:
-                resolved.update(resolve_dns(hostname, af, dns_server=dns_server))
+                ips, ttl = resolve_dns(hostname, af, dns_server=dns_server)
+                resolved.update(ips)
+                if ttl is not None:
+                    ttls.append(ttl)
             if resolved:
                 primary['ips'] = resolved
+                primary['ttl'] = min(ttls) if ttls else None
     elif watcher['type'] == 'urltable':
         url = watcher.get('url', '').strip()
         if url:
@@ -635,6 +707,20 @@ def restore_tables(watchers):
                           f'into {w["alias"]} from saved state')
 
 
+def next_check_delay(watcher, primary):
+    """Seconds until a watcher's next check.
+
+    Normally its interval. If the DNS answer's TTL runs out sooner, check
+    right when it does: that is when a changed record becomes visible, so
+    waiting for the interval only adds delay. Never later than the
+    interval, never sooner than MIN_TTL_WAIT.
+    """
+    ttl = (primary or {}).get('ttl')
+    if ttl is None:
+        return watcher['interval']
+    return max(MIN_TTL_WAIT, min(watcher['interval'], ttl + 1))
+
+
 class Scheduler:
     """Runs each watcher on its own timer.
 
@@ -659,13 +745,14 @@ class Scheduler:
             del self.pending[name]
             if by_name.get(name) != w:
                 continue  # removed or edited meanwhile; rerun with the new config
-            changed = False
+            changed, primary = False, None
             try:
+                primary = future.result()
                 with locked_state() as state:
-                    changed = apply_watcher(w, state, future.result(), max_table_entries)
+                    changed = apply_watcher(w, state, primary, max_table_entries)
             except Exception as e:
                 syslog.syslog(syslog.LOG_ERR, f'aliaserd: [{name}] unexpected error: {e}')
-            self.next_due[name] = now + w['interval']
+            self.next_due[name] = now + next_check_delay(w, primary)
             if changed:
                 self._wake_dependents(w['alias'], watchers, now)
 

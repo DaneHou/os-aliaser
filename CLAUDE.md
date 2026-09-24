@@ -72,7 +72,7 @@ src/
 
 **Key design decisions:**
 - Per-watcher timers (no cron). Lookups run in a small thread pool (`Scheduler`); pf updates and state writes happen only on the main thread
-- Zero external Python dependencies (stdlib only: socket, urllib, xml.etree, subprocess)
+- Zero external Python dependencies (stdlib only). Direct DNS queries use the built-in `dns_query()` stub resolver, not dnspython
 - Atomic pf table updates only (`pfctl -T replace -f <file>`), never filter reloads; addresses never go on the command line
 - Every IP from a feed or static list goes through `normalize_entry()` (ipaddress); a failed source keeps its last good result for 24h instead of shrinking the table
 - Change history tracked per watcher (last 20 changes in state.json)

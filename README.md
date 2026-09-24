@@ -59,9 +59,13 @@ Aliaser Daemon (Python)
 ## Features
 
 - **DNS watchers** — track FQDN changes with configurable intervals (10s–3600s)
+- **Direct DNS queries** — optionally query a specific DNS server per watcher, bypassing the local cache; re-checks as soon as the record's TTL expires
 - **URL feed watchers** — sync IP lists from URLs (threat feeds, cloud provider ranges)
 - **Composite watchers** — merge multiple DNS hostnames, static IPs/CIDRs, and existing alias tables into a single target
 - **Atomic updates** — `pfctl -T replace` only, never triggers filter reload
+- **Survives reboots** — tables are refilled from the last known state as soon as the daemon starts, before the first lookup finishes
+- **Fail-closed** — if DNS or a feed fails, the last good result is kept (up to 24h) instead of shrinking the table
+- **Parallel lookups** — a slow feed never delays other watchers; nested aliases re-merge the moment an included table changes
 - **Change detection** — only updates pf tables when content actually changes
 - **Health monitoring** — empty table alerts, configurable size threshold warnings
 - **Change history** — per-watcher diff log (last 20 changes with added/removed IPs)

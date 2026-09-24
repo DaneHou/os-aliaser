@@ -1,5 +1,9 @@
 # Custom DNS Server per Watcher
 
+> **Superseded (implementation):** the `dnspython` dependency described below was
+> replaced by a small stdlib DNS client (`dns_query()` in `aliaserd.py`), which also
+> returns the record TTL used for scheduling. The model/form parts still apply.
+
 ## Problem
 
 `resolve_dns()` uses `socket.getaddrinfo` which goes through the OS DNS resolver (Unbound on OPNsense). When a DNS record changes upstream (e.g., on Cloudflare), Unbound caches the old result until TTL expires (often 300s). Even with a 30s watcher interval, aliaser cannot detect the change faster than the cache allows.
