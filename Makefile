@@ -77,7 +77,7 @@ install-plugin:
 	@cp src/opnsense/service/conf/actions.d/actions_aliaser.conf $(ACTIONS_DIR)/
 
 	# Runtime directories
-	@mkdir -p /var/run/aliaser
+	@mkdir -p /var/db/aliaser
 	@mkdir -p /var/log/aliaser
 	@echo ">>> Plugin files installed."
 
@@ -110,7 +110,7 @@ uninstall:
 	@rm -f $(PLUGINS_DIR)/aliaser.inc
 	@rm -f $(DESTDIR)/etc/newsyslog.conf.d/aliaser.conf
 	@rm -f /var/run/aliaser.pid
-	@rm -rf /var/run/aliaser
+	@rm -rf /var/run/aliaser /var/db/aliaser
 	@rm -f /var/lib/php/tmp/opnsense_menu_cache.xml 2>/dev/null || true
 	@rm -f /tmp/opnsense_menu_cache.xml 2>/dev/null || true
 	@service configd restart 2>/dev/null || true

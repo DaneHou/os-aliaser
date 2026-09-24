@@ -47,7 +47,7 @@ This is required because `pfctl` table operations need root privileges.
 - Watcher configuration is stored in `/conf/config.xml` (OPNsense standard).
 - No credentials are stored by this plugin (unlike VPN/proxy plugins, alias
   watchers only use public DNS and public URLs).
-- Runtime state is stored in `/var/run/aliaser/state.json` and contains only
+- Runtime state is stored in `/var/db/aliaser/state.json` and contains only
   IP addresses, timestamps, and error messages.
 - The PID file is at `/var/run/aliaser.pid`.
 

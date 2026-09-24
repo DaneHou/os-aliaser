@@ -27,7 +27,7 @@ clog /var/log/system/latest.log | grep aliaserd                       # Syslog e
 pfctl -t <AliasName> -T show                                          # Inspect a pf table
 ```
 
-State is cached at `/var/run/aliaser/state.json`. Config lives in `/conf/config.xml` (OPNsense standard).
+State (incl. change history) is persisted at `/var/db/aliaser/state.json`; all writes go through `locked_state()` because both the daemon and `refresh` write it. Config lives in `/conf/config.xml` (OPNsense standard).
 
 ## Testing
 

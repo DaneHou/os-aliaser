@@ -21,10 +21,11 @@ Architecture:
     - DNS resolution uses socket.getaddrinfo (supports A + AAAA)
     - URL fetching uses urllib (with timeout)
     - Table updates via: pfctl -t <alias> -T replace <ips...>
-    - State cached in /var/run/aliaser/state.json
+    - State persisted in /var/db/aliaser/state.json (survives reboot)
     - Logs to syslog facility 'aliaser'
 """
 
+import fcntl
 import json
 import os
 import signal
@@ -37,7 +38,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 PIDFILE = '/var/run/aliaser.pid'
-STATEFILE = '/var/run/aliaser/state.json'
+STATEFILE = '/var/db/aliaser/state.json'
+# Old location, read once for migration. /var/run is wiped at boot, so history kept there was lost.
+LEGACY_STATEFILE = '/var/run/aliaser/state.json'
+LOCKFILE = '/var/db/aliaser/state.lock'
 CONFIG_XML = '/conf/config.xml'
 PFCTL = '/sbin/pfctl'
 
@@ -226,20 +230,57 @@ def pfctl_replace(alias, ips):
 
 # ---------- State management ----------
 
+#
+# Two processes write state.json: the daemon, and `aliaserd.py refresh`
+# (spawned by configd when the "Refresh Now" button is pressed). Every
+# write therefore goes through locked_state(), which re-reads the file
+# under an exclusive lock. Never keep a state dict in memory across checks,
+# or the next save will overwrite history recorded by the other process.
+
 def load_state():
-    """Load cached watcher state from disk."""
-    try:
-        with open(STATEFILE, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    """Load watcher state from disk."""
+    for path in (STATEFILE, LEGACY_STATEFILE):
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+    return {}
 
 
 def save_state(state):
-    """Persist watcher state to disk."""
+    """Persist watcher state atomically (readers never see a partial file)."""
     os.makedirs(os.path.dirname(STATEFILE), exist_ok=True)
-    with open(STATEFILE, 'w') as f:
+    tmp = STATEFILE + '.tmp'
+    with open(tmp, 'w') as f:
         json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATEFILE)
+
+
+class locked_state:
+    """Context manager: exclusive lock + fresh state; saves on clean exit.
+
+        with locked_state() as state:
+            check_watcher(w, state)
+    """
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(LOCKFILE), exist_ok=True)
+        self._lock = open(LOCKFILE, 'w')
+        fcntl.flock(self._lock, fcntl.LOCK_EX)
+        self.state = load_state()
+        return self.state
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                save_state(self.state)
+        finally:
+            fcntl.flock(self._lock, fcntl.LOCK_UN)
+            self._lock.close()
+        return False
 
 
 # ---------- Watcher logic ----------
@@ -421,7 +462,6 @@ def run_daemon():
     with open(PIDFILE, 'w') as f:
         f.write(str(os.getpid()))
 
-    state = load_state()
     running = True
 
     def handle_signal(signum, frame):
@@ -450,9 +490,8 @@ def run_daemon():
 
             if now - last >= interval:
                 try:
-                    changed = check_watcher(w, state, max_table_entries)
-                    if changed:
-                        save_state(state)
+                    with locked_state() as state:
+                        check_watcher(w, state, max_table_entries)
                 except Exception as e:
                     syslog.syslog(syslog.LOG_ERR,
                                   f'aliaserd: [{name}] unexpected error: {e}')
@@ -462,9 +501,6 @@ def run_daemon():
             next_for_watcher = last_run.get(name, now) + interval
             if next_for_watcher < next_wake:
                 next_wake = next_for_watcher
-
-        # Save state periodically
-        save_state(state)
 
         # Sleep until next watcher needs to run
         sleep_time = max(1, next_wake - time.time())
@@ -617,12 +653,11 @@ def cmd_reconfigure():
 def cmd_refresh(uuid):
     """Force immediate refresh of a single watcher by UUID."""
     watchers, _, max_table_entries = read_config()
-    state = load_state()
 
     for w in watchers:
         if w['uuid'] == uuid:
-            changed = check_watcher(w, state, max_table_entries)
-            save_state(state)
+            with locked_state() as state:
+                changed = check_watcher(w, state, max_table_entries)
             print(json.dumps({
                 'status': 'ok',
                 'watcher': w['name'],
