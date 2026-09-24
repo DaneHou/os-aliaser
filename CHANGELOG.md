@@ -15,9 +15,29 @@ All notable changes to this project will be documented in this file.
 - Include loops (A includes B, B includes A) no longer make IPs impossible to remove.
 - One watcher with a bad interval no longer disables all watchers.
 - Feed failures now show an error message on the status page.
+- `stop` could mistake a running daemon for a dead one (`ps` output truncated to
+  80 columns) and orphan it; `start` could hang a caller capturing its output.
 - `stop` shuts the daemon down gracefully instead of always escalating to SIGKILL,
   never signals an unrelated process that reused a stale PID, and two racing
   `start` calls can no longer leave two daemons running.
+
+### Added
+
+- **Tables survive reboots**: the daemon refills empty tables from the last known state
+  on start, instead of leaving them empty until the first lookup finishes.
+- **Parallel lookups**: a slow or timing-out feed no longer delays other watchers.
+- **Instant nested updates**: when a table changes, watchers that include it re-merge
+  immediately instead of on their own interval.
+- **TTL-aware DNS**: watchers with a custom DNS server re-check as soon as the record's
+  TTL expires (never later than their interval). `dnspython` is no longer needed.
+- **`aliaserd.py health`** for Monit alerting (see README).
+- Automated tests (`tests/`, pytest with a fake pfctl) and GitHub Actions CI.
+
+### Changed
+
+- `logLevel` now takes effect (Warning, the default, still logs table changes).
+- `defaultInterval` now pre-fills new watchers and applies when a watcher's interval is empty.
+- `make install` restarts a running daemon so upgrades take effect.
 
 ### Security
 

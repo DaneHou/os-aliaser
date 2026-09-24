@@ -11,6 +11,7 @@ Usage:
     aliaserd.py stop        Stop the running daemon
     aliaserd.py restart     Restart the daemon
     aliaserd.py status      Print JSON status of all watchers
+    aliaserd.py health      Exit 1 and list problems if unhealthy (for Monit)
     aliaserd.py reconfigure Reload config and restart daemon
     aliaserd.py refresh UUID Force immediate refresh of a watcher
 
@@ -55,6 +56,8 @@ MIN_INTERVAL = 10
 # often than this (a TTL of 0 would otherwise mean a busy loop).
 MIN_TTL_WAIT = 5
 DNS_PORT = 53
+# `health` reports a watcher once its source has failed this many times in a row
+HEALTH_ERROR_THRESHOLD = 3
 MAX_FEED_BYTES = 16 * 1024 * 1024
 # When a DNS/URL source fails, keep serving its last good answer for this
 # long instead of shrinking the table (an allow-list would lock people out,
@@ -990,6 +993,34 @@ def cmd_status():
     print(json.dumps(output, indent=2))
 
 
+def health_problems(watchers, state, daemon_running, now=None):
+    """List what a monitoring system should alert on (empty list = healthy)."""
+    now = time.time() if now is None else now
+    problems = [] if daemon_running else ['daemon is not running']
+    for w in watchers:
+        name, ws = w['name'], state.get(w['name'], {})
+        errors = ws.get('consecutive_errors', 0)
+        if errors >= HEALTH_ERROR_THRESHOLD:
+            problems.append(f'{name}: {errors} failures in a row: {ws.get("last_error", "")}')
+        for alert in ws.get('alerts', []):
+            problems.append(f'{name}: {alert.get("message", "")}')
+        last = ws.get('last_check', 0)
+        # last == 0: not checked yet (new watcher, daemon just started)
+        if daemon_running and last and now - last > max(3 * w['interval'], w['interval'] + 120):
+            problems.append(f'{name}: not checked for {int(now - last)}s (interval {w["interval"]}s)')
+    return problems
+
+
+def cmd_health():
+    """Monit-style check: exit 0 when healthy, 1 with one line per problem."""
+    watchers, _, _ = read_config()
+    problems = health_problems(watchers, load_state(), get_pid() is not None)
+    if problems:
+        print('\n'.join(problems))
+        sys.exit(1)
+    print(f'OK: {len(watchers)} watcher(s) healthy')
+
+
 def cmd_reconfigure():
     """Restart the daemon to pick up new config."""
     cmd_stop()
@@ -1031,7 +1062,7 @@ def cmd_refresh(uuid):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(f'Usage: {sys.argv[0]} start|stop|restart|status|reconfigure|refresh [uuid]')
+        print(f'Usage: {sys.argv[0]} start|stop|restart|status|health|reconfigure|refresh [uuid]')
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -1045,6 +1076,8 @@ if __name__ == '__main__':
         cmd_status()
     elif cmd == 'reconfigure':
         cmd_reconfigure()
+    elif cmd == 'health':
+        cmd_health()
     elif cmd == 'refresh' and len(sys.argv) > 2:
         cmd_refresh(sys.argv[2])
     else:

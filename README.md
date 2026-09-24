@@ -137,6 +137,32 @@ Block known-bad IPs from a threat intelligence feed:
 - Watcher: URL → `https://example.com/blocklist.txt` → `Blocklist` alias (interval: 30m)
 - Firewall rule: block traffic from `Blocklist`
 
+## Alerting (Monit)
+
+The status page only helps if someone looks at it. To get an email when a
+watcher keeps failing, a table goes empty, or the daemon dies, let OPNsense's
+built-in Monit run the health check:
+
+```sh
+/usr/local/opnsense/scripts/OPNsense/Aliaser/aliaserd.py health
+# OK: 3 watcher(s) healthy                                   (exit 0)
+# office: 3 failures in a row: no results from office.example.com   (exit 1)
+```
+
+It reports: daemon not running, a source failing 3+ times in a row, empty-table
+and size-threshold alerts, and watchers not checked for 3× their interval.
+
+1. **Services > Monit > Settings > General / Alert Settings** — enable Monit,
+   set up your mail server and an alert recipient (skip if already done).
+2. **Service Tests Settings** — add a test: *Name* `AliaserHealth`,
+   *Type* `Program Status`, *Condition* `status != 0`, *Action* `Alert`.
+3. **Service Settings** — add a service: *Name* `aliaser`, *Type* `Custom`,
+   *Path* `/usr/local/opnsense/scripts/OPNsense/Aliaser/aliaserd.py health`,
+   *Tests* `AliaserHealth`. Save and apply.
+
+The alert email contains the command's output, i.e. which watcher failed and why.
+(Menu and field names are from OPNsense 24.7/26.1 and may differ slightly between versions.)
+
 ## Updating
 
 ```sh
