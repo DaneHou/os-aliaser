@@ -84,10 +84,15 @@
         });
 
         // When watcher dialog opens, add alias picker and toggle fields
-        $(document).on('opendialog.DialogWatcher', function(e) {
+        // OPNsense 26.x (Tabulator bootgrid) fires 'opnsense_bootgrid_mapped' on
+        // the dialog after the record is loaded; 'opendialog.<id>' no longer
+        // exists. Bind both so this works on old and new cores.
+        function onWatcherDialogOpen() {
             toggleTypeFields();
             loadAliasPicker();
-        });
+        }
+        $(document).on('opnsense_bootgrid_mapped', '#DialogWatcher', onWatcherDialogOpen);
+        $(document).on('opendialog.DialogWatcher', onWatcherDialogOpen);
 
         // Toggle DNS/URL fields based on type
         function toggleTypeFields() {
